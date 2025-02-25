@@ -24,22 +24,25 @@ GDRCopy requires kernel module installation on the host system. Complete these s
 #### Build and installation
 
 ```bash
-git clone https://github.com/NVIDIA/gdrcopy
-cd gdrcopy
+wget https://github.com/NVIDIA/gdrcopy/archive/refs/tags/v2.4.4.tar.gz
+cd gdrcopy-2.4.4/
 make -j$(nproc)
 sudo make prefix=/opt/gdrcopy install
 ```
 
 #### Kernel module installation
 
+After compiling the software, you need to install the appropriate packages based on your Linux distribution.   
+For instance, using Ubuntu 22.04 and CUDA 12.3 as an example:
+
 ```bash
 cd packages
 CUDA=/path/to/cuda ./build-deb-packages.sh
-sudo dpkg -i gdrdrv-dkms_2.4-4_amd64.deb \
-             libgdrapi_2.4-4_amd64.deb \
-             gdrcopy-tests_2.4-4_amd64.deb \
-             gdrcopy_2.4-4_amd64.deb
-sudo ./insmod.sh  # Load kernel modules on bare-metal system
+sudo dpkg -i gdrdrv-dkms_2.4.4_amd64.Ubuntu22_04.deb \
+             libgdrapi_2.4.4_amd64.Ubuntu22_04.deb \
+             gdrcopy-tests_2.4.4_amd64.Ubuntu22_04+cuda12.3.deb \
+             gdrcopy_2.4.4_amd64.Ubuntu22_04.deb
+sudo ./insmod.sh  # Load kernel modules on the bare-metal system
 ```
 
 #### Container environment notes  
@@ -48,9 +51,9 @@ For containerized environments:
 1. Host: keep kernel modules loaded (`gdrdrv`)
 2. Container: install DEB packages *without* rebuilding modules:
    ```bash
-   sudo dpkg -i gdrcopy_2.4-4_amd64.deb \
-                libgdrapi_2.4-4_amd64.deb \
-                gdrcopy-tests_2.4-4_amd64.deb
+   sudo dpkg -i gdrcopy_2.4.4_amd64.Ubuntu22_04.deb \
+                libgdrapi_2.4.4_amd64.Ubuntu22_04.deb \
+                gdrcopy-tests_2.4.4_amd64.Ubuntu22_04+cuda12.3.deb
    ```
 
 #### Verification
