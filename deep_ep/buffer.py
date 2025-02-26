@@ -79,6 +79,9 @@ class Buffer:
                 # NOTES: NVSHMEM initialization requires at least 256 MiB
                 os.environ['NVSHMEM_CUMEM_GRANULARITY'] = f'{2 ** 29}'
 
+            # Disable PCIe relaxed ordering to avoid out-of-order messages
+            os.environ['NVSHMEM_IB_ENABLE_RELAXED_ORDERING'] = '0'
+
             # NOTES: make sure AR (Adaptive Routing) is turned off while running normal kernels, as we cannot verify AR status in the code
             # Synchronize using the root ID
             nvshmem_unique_ids = [None, ] * self.group_size
