@@ -378,7 +378,7 @@ combine(void* combined_x,
             atomic_add_release_global(atomic_clean_flag, num_experts);
     }
 
-    // FP8 cast and issue IBGDA sends
+    // Issue IBGDA sends
     if (responsible_expert_idx < num_experts) {
         const auto dst_rank = responsible_expert_idx / num_local_experts;
         const auto local_expert_idx = responsible_expert_idx % num_local_experts;
