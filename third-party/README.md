@@ -96,8 +96,8 @@ For more detailed configurations, please refer to the [NVSHMEM Installation Guid
 The following example demonstrates building NVSHMEM with IBGDA support:
 
 ```bash
-CUDA_HOME=/path/to/cuda && \
-GDRCOPY_HOME=/path/to/gdrcopy && \
+CUDA_HOME=/path/to/cuda \
+GDRCOPY_HOME=/path/to/gdrcopy \
 NVSHMEM_SHMEM_SUPPORT=0 \
 NVSHMEM_UCX_SUPPORT=0 \
 NVSHMEM_USE_NCCL=0 \
