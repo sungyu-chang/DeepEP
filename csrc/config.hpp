@@ -93,7 +93,6 @@ struct LowLatencyBuffer {
     void* dispatch_rdma_send_buffer = nullptr;
     void* dispatch_rdma_recv_data_buffer = nullptr;
     int* dispatch_rdma_recv_count_buffer = nullptr;
-    int* dispatch_rdma_atomic_token_counter = nullptr;
 
     void* combine_rdma_send_buffer = nullptr;
     void* combine_rdma_recv_data_buffer = nullptr;
@@ -145,10 +144,8 @@ struct LowLatencyLayout {
 
         // Symmetric signaling buffers
         size_t dispatch_recv_count_buffer_bytes = num_experts * sizeof(int);
-        size_t dispatch_recv_atomic_token_counter_bytes = num_local_experts * sizeof(int);
         size_t combine_recv_flag_buffer_bytes = dispatch_recv_count_buffer_bytes;
-        size_t signaling_buffer_bytes = std::max(dispatch_recv_count_buffer_bytes + dispatch_recv_atomic_token_counter_bytes,
-                                                 combine_recv_flag_buffer_bytes);
+        size_t signaling_buffer_bytes = std::max(dispatch_recv_count_buffer_bytes, combine_recv_flag_buffer_bytes);
         total_bytes += signaling_buffer_bytes * 2;
 
         // Assign pointers
@@ -160,7 +157,6 @@ struct LowLatencyLayout {
                 advance(rdma_buffer, send_buffer_bytes * i),
                 advance(rdma_buffer, send_buffer_bytes * 2 + recv_buffer_bytes * i),
                 advance<int*>(rdma_buffer, send_buffer_bytes * 2 + recv_buffer_bytes * 2 + signaling_buffer_bytes * i),
-                advance<int*>(rdma_buffer, send_buffer_bytes * 2 + recv_buffer_bytes * 2 + signaling_buffer_bytes * i + dispatch_recv_count_buffer_bytes),
                 advance(rdma_buffer, send_buffer_bytes * i),
                 advance(rdma_buffer, send_buffer_bytes * 2 + recv_buffer_bytes * i),
                 advance<int*>(rdma_buffer, send_buffer_bytes * 2 + recv_buffer_bytes * 2 + signaling_buffer_bytes * i)
