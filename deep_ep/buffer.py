@@ -44,7 +44,6 @@ class Buffer:
                 to the number of local experts.
         """
 
-        # TODO: argument docs
         # Initialize the CPP runtime
         self.rank = group.rank()
         self.group_size = group.size()
