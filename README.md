@@ -280,6 +280,13 @@ For two micro-batch overlapping, you can refer to the following figure. With our
 
 ![low-latency](figures/low-latency.png)
 
+## Roadmap
+
+- [ ] A100 support (intranode only)
+- [ ] Support BF16 for the low-latency dispatch kernel
+- [ ] Support NVLink protocol for intranode low-latency kernels
+- [ ] SM-free normal kernels
+
 ## Notices
 
 #### Easier potential overall design
