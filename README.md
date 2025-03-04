@@ -204,7 +204,7 @@ def combine_backward(grad_combined_x: Union[torch.Tensor, Tuple[torch.Tensor, to
     global _buffer
 
     # The backward process of MoE combine is actually a dispatch
-    # For more advanced usages, please refer to the docs of the `combine` function
+    # For more advanced usages, please refer to the docs of the `dispatch` function
     grad_x, _, _, _, _, event = _buffer.dispatch(grad_combined_x, handle=handle, async_finish=True,
                                                  previous_event=previous_event,
                                                  allocate_on_comm_stream=previous_event is not None)
