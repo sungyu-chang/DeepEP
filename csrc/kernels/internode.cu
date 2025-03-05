@@ -383,8 +383,7 @@ notify_dispatch(const int* num_tokens_per_rank, int* moe_recv_counter_mapped, in
 
         // Calculate prefix sum
         __syncthreads();
-        EP_STATIC_ASSERT(kNumRDMARanks <= 32, "Invalid number of RDMA ranks");
-        if (thread_id < kNumRDMARanks) {
+        if (thread_id == 0) {
             auto prefix_row = rdma_channel_prefix_matrix + dst_rdma_rank * num_channels;
             #pragma unroll
             for (int i = 1; i < num_channels; ++ i)
