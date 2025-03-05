@@ -91,9 +91,7 @@ For DeepEP, you can control the virtual lane assignment by setting the `NVSHMEM_
 
 ### Adaptive routing
 
-Adaptive routing is an advanced routing feature provided by InfiniBand switches that can evenly distribute traffic across multiple paths. Currently, low-latency kernels support adaptive routing, while normal kernels do not (support may be added soon). **Enabling adaptive routing for normal internode kernels may lead to deadlocks or data corruption issues**.
-
-For low-latency kernels, enabling adaptive routing can completely eliminate network congestion caused by routing conflicts, but it also introduces additional latency. We recommend the following configuration for optimal performance:
+Adaptive routing is an advanced routing feature provided by InfiniBand switches that can evenly distribute traffic across multiple paths. Enabling adaptive routing can completely eliminate network congestion caused by routing conflicts, but it also introduces additional latency. We recommend the following configuration for optimal performance:
 
 - enable adaptive routing in environments with heavy network loads
 - use static routing in environments with light network loads
@@ -134,7 +132,6 @@ def get_buffer(group: dist.ProcessGroup, hidden_bytes: int) -> Buffer:
         num_rdma_bytes = max(config.get_rdma_buffer_size_hint(hidden_bytes, group.size()), num_rdma_bytes)
 
     # Allocate a buffer if not existed or not enough buffer size
-    # NOTES: the adaptive routing configuration of the network **must be off**
     if _buffer is None or _buffer.group != group or _buffer.num_nvl_bytes < num_nvl_bytes or _buffer.num_rdma_bytes < num_rdma_bytes:
         _buffer = Buffer(group, num_nvl_bytes, num_rdma_bytes)
     return _buffer
@@ -282,7 +279,8 @@ For two micro-batch overlapping, you can refer to the following figure. With our
 
 ## Roadmap
 
-- [ ] AR support (releasing soon)
+- [x] AR support
+- [ ] Refactor low-latency mode AR code
 - [ ] A100 support (intranode only)
 - [ ] Support BF16 for the low-latency dispatch kernel
 - [ ] Support NVLink protocol for intranode low-latency kernels

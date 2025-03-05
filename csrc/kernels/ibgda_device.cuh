@@ -372,7 +372,6 @@ nvshmemi_ibgda_allocate_recvs(nvshmemi_ibgda_device_qp* qp) {
 __device__ static __forceinline__ void
 nvshmemi_ibgda_prepare_recvs(int dst_rank, int qp_id) {
     // NOTES: only one thread can run this function
-    // TODO: consider this assertion for normal AR
     EP_DEVICE_ASSERT(nvshmemi_ibgda_allocate_recvs(ibgda_get_rc(dst_rank, qp_id)) > 16);
 }
 

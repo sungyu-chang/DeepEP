@@ -218,7 +218,6 @@ def test_main(num_sms: int, local_rank: int, num_local_ranks: int, num_ranks: in
 
 # noinspection PyUnboundLocalVariable
 def test_loop(local_rank: int, num_local_ranks: int):
-    # Please make sure AR (Adaptive Routing) is turned off when running normal internode kernels,
     num_nodes = int(os.getenv('WORLD_SIZE', 1))
     rank, num_ranks, group = init_dist(local_rank, num_local_ranks)
     test_ll_compatibility = False
