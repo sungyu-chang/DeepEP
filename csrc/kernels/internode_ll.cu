@@ -255,7 +255,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
         if (sub_warp_id == 1 and lane_id == 0) {
             if (src_rank != rank) {
                 nvshmemi_ibgda_poll_recv(src_rank, local_expert_idx);
-                num_recv_tokens = ld_acquire_global(rdma_recv_count + local_expert_idx * num_ranks + src_rank);
+                num_recv_tokens = ld_acquire_sys_global(rdma_recv_count + local_expert_idx * num_ranks + src_rank);
                 EP_DEVICE_ASSERT(num_recv_tokens != 0);
             } else {
                 while ((num_recv_tokens = ld_acquire_global(rdma_recv_count + local_expert_idx * num_ranks + src_rank)) == 0);

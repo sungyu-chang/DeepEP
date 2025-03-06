@@ -925,7 +925,7 @@ dispatch(int4* recv_x, float* recv_x_scales, int64_t* recv_topk_idx, float* recv
                 break;
 
             // Update remote head
-            if (min_head != std::numeric_limits<int>::max() and min_head > last_head and lane_id < kNumRDMARanks) {
+            if (min_head != std::numeric_limits<int>::max() and min_head >= last_head + num_max_rdma_chunked_send_tokens and lane_id < kNumRDMARanks) {
                 nvshmemx_signal_op(rdma_channel_head.buffer(rdma_rank), min_head - last_head, NVSHMEM_SIGNAL_ADD,
                                    translate_dst_rdma_rank<kLowLatencyMode>(lane_id, nvl_rank));
                 last_head = min_head;
@@ -1655,7 +1655,7 @@ combine(int4* combined_x, float* combined_topk_weights,
                     #pragma unroll
                     for (int i = 0; i < kNumRDMAReceivers; ++ i) if (not rdma_receiver_retired[i])
                         min_head = min(min_head, rdma_receiver_rdma_head[i][dst_rdma_rank]);
-                    if (min_head != std::numeric_limits<int>::max() and min_head > last_rdma_head and lane_id < kNumRDMARanks) {
+                    if (min_head != std::numeric_limits<int>::max() and min_head >= last_rdma_head + num_max_rdma_chunked_send_tokens and lane_id < kNumRDMARanks) {
                         nvshmemx_signal_op(rdma_channel_head.buffer(rdma_rank), min_head - last_rdma_head, NVSHMEM_SIGNAL_ADD,
                                            translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank));
                         last_rdma_head = min_head;
