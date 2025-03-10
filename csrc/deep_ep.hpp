@@ -134,10 +134,10 @@ public:
 
     void clean_low_latency_buffer(int num_max_dispatch_tokens_per_rank, int hidden, int num_experts);
 
-    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
+    std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
     low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_idx,
                          int num_max_dispatch_tokens_per_rank, int num_experts,
-                         bool async, bool return_recv_hook);
+                         bool use_fp8, bool async, bool return_recv_hook);
 
     std::tuple<torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
     low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_idx, const torch::Tensor& topk_weights,

@@ -128,7 +128,7 @@ struct LowLatencyLayout {
 
         // Message sizes
         EP_HOST_ASSERT(num_scales * sizeof(float) <= hidden);
-        size_t num_bytes_per_dispatch_msg = hidden + num_scales * sizeof(float) + sizeof(int4);
+        size_t num_bytes_per_dispatch_msg = sizeof(int4) + std::max(hidden * sizeof(nv_bfloat16), hidden + num_scales * sizeof(float));
         size_t num_bytes_per_combine_msg = sizeof(int4) + hidden * sizeof(nv_bfloat16);
 
         // Send buffer
