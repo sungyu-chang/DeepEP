@@ -32,7 +32,7 @@ sudo make prefix=/opt/gdrcopy install
 
 #### Kernel module installation
 
-After compiling the software, you need to install the appropriate packages based on your Linux distribution.   
+After compiling the software, you need to install the appropriate packages based on your Linux distribution.
 For instance, using Ubuntu 22.04 and CUDA 12.3 as an example:
 
 ```bash
@@ -46,7 +46,7 @@ popd
 sudo ./insmod.sh  # Load kernel modules on the bare-metal system
 ```
 
-#### Container environment notes  
+#### Container environment notes
 
 For containerized environments:
 1. Host: keep kernel modules loaded (`gdrdrv`)
@@ -65,7 +65,7 @@ gdrcopy_copybw  # Should show bandwidth test results
 
 ### 2. Acquiring NVSHMEM source code
 
-Download NVSHMEM v3.1.7 from the [NVIDIA NVSHMEM Archive](https://developer.nvidia.com/nvshmem-archive).
+Download NVSHMEM v3.2.5 from the [NVIDIA NVSHMEM OPEN SOURCE PACKAGES](https://developer.nvidia.com/downloads/assets/secure/nvshmem/nvshmem_src_3.2.5-1.txz).
 
 ### 3. Apply our custom patch
 
@@ -102,6 +102,7 @@ GDRCOPY_HOME=/path/to/gdrcopy \
 NVSHMEM_SHMEM_SUPPORT=0 \
 NVSHMEM_UCX_SUPPORT=0 \
 NVSHMEM_USE_NCCL=0 \
+NVSHMEM_MPI_SUPPORT=0 \
 NVSHMEM_IBGDA_SUPPORT=1 \
 NVSHMEM_PMIX_SUPPORT=0 \
 NVSHMEM_TIMEOUT_DEVICE_POLLING=0 \
