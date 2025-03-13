@@ -73,8 +73,9 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                     hash_value ^= hash_tensor(packed_recv_x[i, :num_valid_tokens])
 
             # Check combine correctness
+            out = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
             combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x, topk_idx, topk_weights, handle,
-                                                                 async_finish=not return_recv_hook, return_recv_hook=return_recv_hook)
+                                                                 async_finish=not return_recv_hook, return_recv_hook=return_recv_hook, out=out)
             hook() if return_recv_hook else event.current_stream_wait()
             if do_check:
                 diff = calc_diff(x * topk_weights.masked_fill(topk_idx == -1, 0).sum(dim=1).view(-1, 1), combined_x)
