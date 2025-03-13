@@ -498,7 +498,7 @@ class Buffer:
     # noinspection PyTypeChecker
     def low_latency_combine(self, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor,
                             handle: tuple, async_finish: bool = False, return_recv_hook: bool = False,
-                            out: torch.Tensor | None = None) -> \
+                            out: Optional[torch.Tensor] = None) -> \
             Tuple[torch.Tensor, EventOverlap, Callable]:
         """
         A low-latency implementation for combining tokens (reduce **with weights**) with IBGDA.
