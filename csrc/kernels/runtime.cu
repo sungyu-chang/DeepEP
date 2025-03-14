@@ -41,27 +41,6 @@ std::vector<uint8_t> get_unique_id() {
     return result;
 }
 
-__global__ void ibgda_initialize_recv_queue(int rank) {
-    auto thread_idx = static_cast<int>(threadIdx.x);
-    auto num_threads = static_cast<int>(blockDim.x);
-
-    auto dst_rank = static_cast<int>(blockIdx.x);
-    if (dst_rank != rank) {
-        for (int qp_id = thread_idx; qp_id < ibgda_get_state()->num_rc_per_pe; qp_id += num_threads) {
-            auto qp = ibgda_get_rc(dst_rank, qp_id);
-
-            // Clean some necessary variables
-            for (int i = 0; i < qp->rx_wq.nwqes; ++ i)
-                ibgda_write_empty_recv_wqe(ibgda_get_wqe_ptr(qp, i));
-            qp->mvars.rx_wq.resv_head = 0;
-            qp->mvars.rx_wq.cons_idx = 0;
-
-            // Allocate receive slots
-            nvshmemi_ibgda_allocate_recvs(qp);
-        }
-    }
-}
-
 int init(const std::vector<uint8_t> &root_unique_id_val, int rank, int num_ranks, bool low_latency_mode) {
     nvshmemx_uniqueid_t root_unique_id;
     nvshmemx_init_attr_t attr;
@@ -85,10 +64,7 @@ int init(const std::vector<uint8_t> &root_unique_id_val, int rank, int num_ranks
         CUDA_CHECK(cudaGetSymbolAddress(reinterpret_cast<void**>(&dev_state_ptr), nvshmemi_device_state_d));
 
         bool ibgda_is_initialized = false;
-        cudaMemcpy(&dev_state_ptr->ibgda_is_initialized, &ibgda_is_initialized, sizeof(bool), cudaMemcpyHostToDevice);
-
-        // Initialize recv queues for low-latency mode AR
-        ibgda_initialize_recv_queue<<<num_ranks, 128>>>(rank);
+        CUDA_CHECK(cudaMemcpy(&dev_state_ptr->ibgda_is_initialized, &ibgda_is_initialized, sizeof(bool), cudaMemcpyHostToDevice));
     }
     nvshmem_barrier_all();
     return nvshmem_my_pe();
