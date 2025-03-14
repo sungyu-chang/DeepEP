@@ -417,12 +417,11 @@ __device__ __forceinline__ void nvshmemi_ibgda_amo_nonfetch_add(void *rptr, cons
     uint64_t raddr;
     ibgda_get_rkey(reinterpret_cast<uint64_t>(rptr), pe, &raddr, &rkey);
 
-    void *wqe_ptrs[1];
     uint64_t my_wqe_idx = ibgda_reserve_wqe_slots(qp, 1);
-    wqe_ptrs[0] = ibgda_get_wqe_ptr(qp, my_wqe_idx);
+    void *wqe_ptrs = ibgda_get_wqe_ptr(qp, my_wqe_idx);
 
     ibgda_write_amo_add_wqe(qp, value, reinterpret_cast<uint64_t>(qp->ibuf.buf),
-                            qp->ibuf.lkey, raddr, rkey, my_wqe_idx, wqe_ptrs);
+                            qp->ibuf.lkey, raddr, rkey, my_wqe_idx, &wqe_ptrs);
 
     ibgda_submit_requests<true>(qp, my_wqe_idx, 1);
 }
