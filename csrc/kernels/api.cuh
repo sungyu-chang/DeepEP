@@ -147,7 +147,8 @@ void combine(void* combined_x,
              int* next_clean, int num_next_clean_int,
              int num_combined_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
              int num_topk, int num_experts, int rank, int num_ranks,
-             void* workspace, cudaStream_t stream, int phases);
+             void* workspace, cudaStream_t stream,
+             int phases, bool zero_copy);
 
 } // namespace internode_ll
 

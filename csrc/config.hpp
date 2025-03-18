@@ -102,6 +102,9 @@ struct LowLatencyBuffer {
     void* combine_rdma_recv_data_buffer = nullptr;
     int* combine_rdma_recv_flag_buffer = nullptr;
 
+    void* combine_rdma_send_buffer_data_start = nullptr;
+    int num_bytes_per_combine_msg = 0;
+
     std::pair<int*, int> clean_meta() {
         EP_HOST_ASSERT(dispatch_rdma_recv_count_buffer == combine_rdma_recv_flag_buffer);
         return {dispatch_rdma_recv_count_buffer, num_clean_int};
@@ -163,7 +166,9 @@ struct LowLatencyLayout {
                 advance<int*>(rdma_buffer, send_buffer_bytes * 2 + recv_buffer_bytes * 2 + signaling_buffer_bytes * i),
                 advance(rdma_buffer, send_buffer_bytes * i),
                 advance(rdma_buffer, send_buffer_bytes * 2 + recv_buffer_bytes * i),
-                advance<int*>(rdma_buffer, send_buffer_bytes * 2 + recv_buffer_bytes * 2 + signaling_buffer_bytes * i)
+                advance<int*>(rdma_buffer, send_buffer_bytes * 2 + recv_buffer_bytes * 2 + signaling_buffer_bytes * i),
+                advance(rdma_buffer, send_buffer_bytes * i + sizeof(int4)),
+                static_cast<int>(num_bytes_per_combine_msg)
             };
         }
     }
