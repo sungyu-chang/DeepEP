@@ -112,7 +112,6 @@ def test_main(num_sms: int, local_rank: int, num_ranks: int, rank: int, buffer: 
                             check_data(recv_topk_weights, rank_prefix_matrix)
 
                     # Test cached dispatch (must without top-k staffs)
-                    # NOTES: handle must be refreshed
                     if not with_topk:
                         dispatch_args = {'x': current_x, 'handle': handle, 'config': config, 'async_finish': async_mode}
                         if previous_mode:
