@@ -428,7 +428,7 @@ void notify_dispatch(const int* num_tokens_per_rank, int* moe_recv_counter_mappe
                   buffer_ptrs, task_fifo_ptrs, head, rank, \
                   cpu_rdma_team); } break
 
-    constexpr int kNumThreads = std::max(256, 32 * num_channels);
+    constexpr int kNumThreads = 512;
     const auto num_rdma_ranks = num_ranks / NUM_MAX_NVL_PEERS;
 
     // Get clean meta
