@@ -60,7 +60,7 @@ def test_main(num_sms: int, local_rank: int, num_ranks: int, rank: int, buffer: 
     t = bench(lambda: buffer.get_dispatch_layout(topk_idx, num_experts))[0]
     if local_rank == 0:
         print(f'[layout] Kernel performance: {t * 1000:.3f} ms', flush=True)
-        print()
+        print('', flush=True)
     group.barrier()
     time.sleep(1)
 
@@ -145,7 +145,7 @@ def test_main(num_sms: int, local_rank: int, num_ranks: int, rank: int, buffer: 
                     if local_rank == 0:
                         print(' passed', flush=True)
     if local_rank == 0:
-        print()
+        print('', flush=True)
 
     # Tune dispatch performance
     best_dispatch_results = None
@@ -160,10 +160,10 @@ def test_main(num_sms: int, local_rank: int, num_ranks: int, rank: int, buffer: 
             if t < best_time:
                 best_time, best_results = t, (num_sms, nvl_chunk_size)
             if local_rank == 0:
-                print(f'[tuning] SMs {num_sms}, NVL chunk {nvl_chunk_size}: {nvl_recv_bytes / 1e9 / t:.2f} GB/s (NVL) ')
+                print(f'[tuning] SMs {num_sms}, NVL chunk {nvl_chunk_size}: {nvl_recv_bytes / 1e9 / t:.2f} GB/s (NVL) ', flush=True)
         if local_rank == 0:
-            print(f'[tuning] Best dispatch ({"FP8" if isinstance(current_x, tuple) else "BF16"}): SMs {best_results[0]}, NVL chunk {best_results[1]}, {nvl_recv_bytes / 1e9 / best_time:.2f} GB/s (NVL)')
-            print()
+            print(f'[tuning] Best dispatch ({"FP8" if isinstance(current_x, tuple) else "BF16"}): SMs {best_results[0]}, NVL chunk {best_results[1]}, {nvl_recv_bytes / 1e9 / best_time:.2f} GB/s (NVL)', flush=True)
+            print('', flush=True)
 
         if isinstance(current_x, tuple):
             # Gather FP8 the best config from rank 0
@@ -185,13 +185,13 @@ def test_main(num_sms: int, local_rank: int, num_ranks: int, rank: int, buffer: 
         tune_args = {'x': recv_x, 'handle': handle, 'config': config}
         t = bench(lambda: buffer.combine(**tune_args))[0]
         if local_rank == 0:
-            print(f'[tuning] SMs {num_sms}, NVL chunk {nvl_chunk_size}: {combine_bf16_nvl_send_bytes / 1e9 / t:.2f} GB/s (NVL) ')
+            print(f'[tuning] SMs {num_sms}, NVL chunk {nvl_chunk_size}: {combine_bf16_nvl_send_bytes / 1e9 / t:.2f} GB/s (NVL) ', flush=True)
             if t < best_time:
                 best_time, best_results = t, (num_sms, nvl_chunk_size)
 
     if local_rank == 0:
-        print(f'[tuning] Best combine: SMs {best_results[0]}, NVL chunk {best_results[1]}: {combine_bf16_nvl_send_bytes / 1e9 / best_time:.2f} GB/s (NVL)')
-        print()
+        print(f'[tuning] Best combine: SMs {best_results[0]}, NVL chunk {best_results[1]}: {combine_bf16_nvl_send_bytes / 1e9 / best_time:.2f} GB/s (NVL)', flush=True)
+        print('', flush=True)
 
 
 # noinspection PyUnboundLocalVariable
@@ -209,7 +209,7 @@ def test_loop(local_rank: int, num_local_ranks: int):
     for i in (24, ):
         test_main(i, local_rank, num_ranks, rank, buffer, group)
         if local_rank == 0:
-            print()
+            print('', flush=True)
 
     # Test compatibility with low latency functions
     if test_ll_compatibility:
