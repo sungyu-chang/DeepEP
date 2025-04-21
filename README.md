@@ -21,6 +21,16 @@ We test normal kernels on H800 (~160 GB/s NVLink maximum bandwidth), with each c
 | Internode |      32      |    44 GB/s (RDMA)    |     32      |    47 GB/s (RDMA)    |
 | Internode |      64      |    46 GB/s (RDMA)    |     64      |    45 GB/s (RDMA)    |
 
+Through in-depth optimization, the following enhancements have been implemented in the Internode Normal Kernel: 1) Replacing IBRC with IBGDA, and 2) Utilizing distinct QPs (Queue Pairs) per channel for parallel data transmission. These improvements not only enhance the robustness of the Internode Normal Kernel in scenarios involving dual-port NICs and RoCE networks but also further elevate communication performance.
+
+|   Type    | Dispatch #EP | Bottleneck bandwidth | Combine #EP | Bottleneck bandwidth |
+|:---------:|:------------:|:--------------------:|:-----------:|:--------------------:|
+| Internode |      16      |    47 GB/s (RDMA)    |     16      |    62 GB/s (RDMA)    |
+| Internode |      32      |    59 GB/s (RDMA)    |     32      |    60 GB/s (RDMA)    |
+| Internode |      64      |    49 GB/s (RDMA)    |     64      |    51 GB/s (RDMA)    |
+
+The performance optimization solution for Internode Normal Kernel was jointly completed by our team and Tencent Network Platform Department.
+
 ### Low-latency kernels with pure RDMA
 
 We test low-latency kernels on H800 with each connected to a CX7 InfiniBand 400 Gb/s RDMA network card (~50 GB/s maximum bandwidth). And we follow a typical DeepSeek-V3/R1 production setting (128 tokens per batch, 7168 hidden, top-8 experts, FP8 dispatching and BF16 combining).
