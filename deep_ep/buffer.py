@@ -65,9 +65,10 @@ class Buffer:
 
         # Synchronize NVSHMEM unique IDs
         root_unique_id = None
+        internode_use_ibgda = True
         if self.runtime.get_num_rdma_ranks() > 1 or low_latency_mode:
             # Enable IBGDA for the low latency mode, which refers to "no package forwarding between NVLink and RDMA"
-            if low_latency_mode:
+            if low_latency_mode or internode_use_ibgda:
                 assert num_qps_per_rank > 0
                 os.environ['NVSHMEM_DISABLE_P2P'] = '1'
                 os.environ['NVSHMEM_IB_ENABLE_IBGDA'] = '1'

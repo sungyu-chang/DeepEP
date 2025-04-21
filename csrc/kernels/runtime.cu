@@ -59,7 +59,8 @@ int init(const std::vector<uint8_t> &root_unique_id_val, int rank, int num_ranks
     }
 
     // Normal operations use IBRC, while low-latency operations use IBGDA
-    if (low_latency_mode) {
+    bool internode_use_ibgda = true;
+    if (low_latency_mode or internode_use_ibgda) {
         nvshmemi_device_host_state_t* dev_state_ptr = nullptr;
         CUDA_CHECK(cudaGetSymbolAddress(reinterpret_cast<void**>(&dev_state_ptr), nvshmemi_device_state_d));
 

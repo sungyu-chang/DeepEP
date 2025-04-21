@@ -218,17 +218,19 @@ def test_main(num_sms: int, local_rank: int, num_local_ranks: int, num_ranks: in
 # noinspection PyUnboundLocalVariable
 def test_loop(local_rank: int, num_local_ranks: int):
     num_nodes = int(os.getenv('WORLD_SIZE', 1))
+    num_sms = 24
+    qp_num = num_sms // 2
     rank, num_ranks, group = init_dist(local_rank, num_local_ranks)
     test_ll_compatibility = False
     if test_ll_compatibility:
         ll_num_tokens, ll_hidden, ll_num_experts, ll_num_topk = 16, 5120, 256, 9
 
     buffer = deep_ep.Buffer(group, int(1e9), int(1e9), low_latency_mode=test_ll_compatibility,
-                            num_qps_per_rank=(ll_num_experts // num_ranks if test_ll_compatibility else 1))
+                            num_qps_per_rank=(ll_num_experts // num_ranks if test_ll_compatibility else qp_num))
     assert num_local_ranks == 8 and num_ranks > 8
     torch.manual_seed(rank)
 
-    for i in (24, ):
+    for i in (num_sms, ):
         test_main(i, local_rank, num_local_ranks, num_ranks, num_nodes, rank, buffer, group)
         if local_rank == 0:
             print('', flush=True)
