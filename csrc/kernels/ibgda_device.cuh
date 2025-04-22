@@ -413,7 +413,7 @@ __device__ static __forceinline__ void ibgda_write_amo_add_wqe(
 __device__ __forceinline__ void nvshmemi_ibgda_amo_nonfetch_add(void *rptr, const int& value, int pe, int qp_id, bool is_local_copy = false) {
     if (is_local_copy) {
         // Fallback to NVSHMEM legacy API 
-        nvshmemx_signal_op(reinterpret_cast<uint64_t*>(rptr), value, NVSHMEM_SIGNAL_ADD, pe);
+        nvshmemx_signal_op(static_cast<uint64_t*>(rptr), value, NVSHMEM_SIGNAL_ADD, pe);
     } else {
         nvshmemi_ibgda_device_qp_t *qp = ibgda_get_rc(pe, qp_id);
 

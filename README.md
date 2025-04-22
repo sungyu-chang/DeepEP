@@ -17,19 +17,11 @@ We test normal kernels on H800 (~160 GB/s NVLink maximum bandwidth), with each c
 |   Type    | Dispatch #EP | Bottleneck bandwidth | Combine #EP | Bottleneck bandwidth |
 |:---------:|:------------:|:--------------------:|:-----------:|:--------------------:|
 | Intranode |      8       |  153 GB/s (NVLink)   |      8      |  158 GB/s (NVLink)   |
-| Internode |      16      |    43 GB/s (RDMA)    |     16      |    43 GB/s (RDMA)    |
-| Internode |      32      |    44 GB/s (RDMA)    |     32      |    47 GB/s (RDMA)    |
-| Internode |      64      |    46 GB/s (RDMA)    |     64      |    45 GB/s (RDMA)    |
-
-Through in-depth optimization, the following enhancements have been implemented in the Internode Normal Kernel: 1) Replacing IBRC with IBGDA, and 2) Utilizing distinct QPs (Queue Pairs) per channel for parallel data transmission. These improvements not only enhance the robustness of the Internode Normal Kernel in scenarios involving dual-port NICs and RoCE networks but also further elevate communication performance.
-
-|   Type    | Dispatch #EP | Bottleneck bandwidth | Combine #EP | Bottleneck bandwidth |
-|:---------:|:------------:|:--------------------:|:-----------:|:--------------------:|
 | Internode |      16      |    47 GB/s (RDMA)    |     16      |    62 GB/s (RDMA)    |
 | Internode |      32      |    59 GB/s (RDMA)    |     32      |    60 GB/s (RDMA)    |
 | Internode |      64      |    49 GB/s (RDMA)    |     64      |    51 GB/s (RDMA)    |
 
-The performance optimization solution for Internode Normal Kernel was jointly completed by our team and Tencent Network Platform Department.
+**News (2025.04.22)**: the performance is optimized by 5-35% by Tencent Network Platform Department, see [#130](https://github.com/deepseek-ai/DeepEP/pull/130) for more details. Thanks for the contribution!
 
 ### Low-latency kernels with pure RDMA
 
