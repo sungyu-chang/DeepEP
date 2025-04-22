@@ -65,19 +65,17 @@ class Buffer:
 
         # Synchronize NVSHMEM unique IDs
         root_unique_id = None
-        internode_use_ibgda = True
         if self.runtime.get_num_rdma_ranks() > 1 or low_latency_mode:
-            # Enable IBGDA for the low latency mode, which refers to "no package forwarding between NVLink and RDMA"
-            if low_latency_mode or internode_use_ibgda:
-                assert num_qps_per_rank > 0
-                os.environ['NVSHMEM_DISABLE_P2P'] = '1'
-                os.environ['NVSHMEM_IB_ENABLE_IBGDA'] = '1'
-                os.environ['NVSHMEM_IBGDA_NIC_HANDLER'] = 'gpu'
-                os.environ['NVSHMEM_IBGDA_NUM_RC_PER_PE'] = f'{num_qps_per_rank}'
-                # Make sure QP depth is always larger than the number of on-flight WRs, so that we can skip WQ slot check
-                os.environ['NVSHMEM_QP_DEPTH'] = '1024'
-                # NOTES: NVSHMEM initialization requires at least 256 MiB
-                os.environ['NVSHMEM_CUMEM_GRANULARITY'] = f'{2 ** 29}'
+            # Enable IBGDA 
+            assert num_qps_per_rank > 0
+            os.environ['NVSHMEM_DISABLE_P2P'] = '1'
+            os.environ['NVSHMEM_IB_ENABLE_IBGDA'] = '1'
+            os.environ['NVSHMEM_IBGDA_NIC_HANDLER'] = 'gpu'
+            os.environ['NVSHMEM_IBGDA_NUM_RC_PER_PE'] = f'{num_qps_per_rank}'
+            # Make sure QP depth is always larger than the number of on-flight WRs, so that we can skip WQ slot check
+            os.environ['NVSHMEM_QP_DEPTH'] = '1024'
+            # NOTES: NVSHMEM initialization requires at least 256 MiB
+            os.environ['NVSHMEM_CUMEM_GRANULARITY'] = f'{2 ** 29}'
 
             # Synchronize using the root ID
             nvshmem_unique_ids = [None, ] * self.group_size
