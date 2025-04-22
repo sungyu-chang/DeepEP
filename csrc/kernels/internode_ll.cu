@@ -167,7 +167,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
         EP_DEVICE_ASSERT(num_sms > 1);
         if (sm_id == 0) {
             // The first SM is also responsible for checking QPs
-            EP_DEVICE_ASSERT(ibgda_get_state()->num_rc_per_pe == num_local_experts);
+            EP_DEVICE_ASSERT(ibgda_get_state()->num_rc_per_pe >= num_local_experts);
 
             // The first SM is also responsible for cleaning the next buffer
             #pragma unroll
@@ -215,7 +215,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
         // Wait local sends issued and send expert counts
         while (ld_acquire_global(atomic_finish_counter_per_expert + responsible_expert_idx) != FINISHED_SUM_TAG * 2);
         if (dst_rank != rank) {
-            nvshmemi_ibgda_amo_nonfetch_add(rdma_recv_count + dst_expert_local_idx * num_ranks + rank, -num_tokens_sent - 1, dst_rank, dst_expert_local_idx);
+            nvshmemi_ibgda_amo_nonfetch_add(rdma_recv_count + dst_expert_local_idx * num_ranks + rank, -num_tokens_sent - 1, dst_rank, dst_expert_local_idx, false);
         } else {
             st_na_release(rdma_recv_count + dst_expert_local_idx * num_ranks + rank, -num_tokens_sent - 1);
         }
