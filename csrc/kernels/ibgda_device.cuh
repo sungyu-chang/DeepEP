@@ -325,6 +325,7 @@ ibgda_write_empty_recv_wqe(void *out_wqe) {
     st_na_relaxed(reinterpret_cast<int4*>(data_seg_ptr), *reinterpret_cast<const int4*>(&data_seg));
 }
 
+template <bool kAlwaysDoPostSend = false>
 __device__ static __forceinline__ void
 nvshmemi_ibgda_put_nbi_warp(uint64_t req_rptr, uint64_t req_lptr, size_t bytes, int dst_pe, int qp_id, int lane_id, int message_idx) {
     // Get lkey and rkey, store them into lanes
@@ -365,7 +366,7 @@ nvshmemi_ibgda_put_nbi_warp(uint64_t req_rptr, uint64_t req_lptr, size_t bytes, 
 
     // Submit
     if (lane_id == 0)
-        ibgda_submit_requests<false>(qp, base_wqe_idx, num_wqes, message_idx);
+        ibgda_submit_requests<kAlwaysDoPostSend>(qp, base_wqe_idx, num_wqes, message_idx);
     __syncwarp();
 }
 
@@ -410,20 +411,25 @@ __device__ static __forceinline__ void ibgda_write_amo_add_wqe(
     st_na_relaxed(reinterpret_cast<int4*>(data_seg_ptr), *reinterpret_cast<int4*>(&data_seg));
 }
 
-__device__ __forceinline__ void nvshmemi_ibgda_amo_nonfetch_add(void *rptr, const int& value, int pe, int qp_id) {
-    nvshmemi_ibgda_device_qp_t *qp = ibgda_get_rc(pe, qp_id);
+__device__ __forceinline__ void nvshmemi_ibgda_amo_nonfetch_add(void *rptr, const int& value, int pe, int qp_id, bool is_local_copy = false) {
+    if (is_local_copy) {
+        // Fallback to NVSHMEM legacy API 
+        nvshmemx_signal_op(static_cast<uint64_t*>(rptr), value, NVSHMEM_SIGNAL_ADD, pe);
+    } else {
+        nvshmemi_ibgda_device_qp_t *qp = ibgda_get_rc(pe, qp_id);
 
-    __be32 rkey;
-    uint64_t raddr;
-    ibgda_get_rkey(reinterpret_cast<uint64_t>(rptr), pe, &raddr, &rkey);
+        __be32 rkey;
+        uint64_t raddr;
+        ibgda_get_rkey(reinterpret_cast<uint64_t>(rptr), pe, &raddr, &rkey);
 
-    uint64_t my_wqe_idx = ibgda_reserve_wqe_slots(qp, 1);
-    void *wqe_ptrs = ibgda_get_wqe_ptr(qp, my_wqe_idx);
+        uint64_t my_wqe_idx = ibgda_reserve_wqe_slots(qp, 1);
+        void *wqe_ptrs = ibgda_get_wqe_ptr(qp, my_wqe_idx);
 
-    ibgda_write_amo_add_wqe(qp, value, reinterpret_cast<uint64_t>(qp->ibuf.buf),
-                            qp->ibuf.lkey, raddr, rkey, my_wqe_idx, &wqe_ptrs);
+        ibgda_write_amo_add_wqe(qp, value, reinterpret_cast<uint64_t>(qp->ibuf.buf),
+                                qp->ibuf.lkey, raddr, rkey, my_wqe_idx, &wqe_ptrs);
 
-    ibgda_submit_requests<true>(qp, my_wqe_idx, 1);
+        ibgda_submit_requests<true>(qp, my_wqe_idx, 1);
+    }
 }
 
 } // namespace deep_ep

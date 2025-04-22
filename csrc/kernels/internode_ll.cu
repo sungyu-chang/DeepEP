@@ -167,7 +167,7 @@ dispatch(void* packed_recv_x, float* packed_recv_x_scales,
         EP_DEVICE_ASSERT(num_sms > 1);
         if (sm_id == 0) {
             // The first SM is also responsible for checking QPs
-            EP_DEVICE_ASSERT(ibgda_get_state()->num_rc_per_pe == num_local_experts);
+            EP_DEVICE_ASSERT(ibgda_get_state()->num_rc_per_pe >= num_local_experts);
 
             // The first SM is also responsible for cleaning the next buffer
             #pragma unroll
