@@ -325,6 +325,7 @@ ibgda_write_empty_recv_wqe(void *out_wqe) {
     st_na_relaxed(reinterpret_cast<int4*>(data_seg_ptr), *reinterpret_cast<const int4*>(&data_seg));
 }
 
+template <bool kAlwaysDoPostSend = false>
 __device__ static __forceinline__ void
 nvshmemi_ibgda_put_nbi_warp(uint64_t req_rptr, uint64_t req_lptr, size_t bytes, int dst_pe, int qp_id, int lane_id, int message_idx) {
     // Get lkey and rkey, store them into lanes
@@ -365,7 +366,7 @@ nvshmemi_ibgda_put_nbi_warp(uint64_t req_rptr, uint64_t req_lptr, size_t bytes, 
 
     // Submit
     if (lane_id == 0)
-        ibgda_submit_requests<false>(qp, base_wqe_idx, num_wqes, message_idx);
+        ibgda_submit_requests<kAlwaysDoPostSend>(qp, base_wqe_idx, num_wqes, message_idx);
     __syncwarp();
 }
 
@@ -428,41 +429,6 @@ __device__ __forceinline__ void nvshmemi_ibgda_amo_nonfetch_add(void *rptr, cons
                                 qp->ibuf.lkey, raddr, rkey, my_wqe_idx, &wqe_ptrs);
 
         ibgda_submit_requests<true>(qp, my_wqe_idx, 1);
-    }
-}
-
-__device__ static __forceinline__ void
-nvshmemi_ibgda_put_nbi_thread(uint64_t req_rptr, uint64_t req_lptr, size_t bytes,
-                              int dst_pe, int qp_id, bool is_local_copy) {
-    if (is_local_copy) {
-        // Fallback to NVSHMEM legacy API
-        // TODO: rewrite local API copy with unrolling and vectorization
-        nvshmem_uint8_put_nbi(reinterpret_cast<uint8_t*>(req_rptr), reinterpret_cast<uint8_t*>(req_lptr), bytes, dst_pe);
-    } else {
-        uint32_t num_wqes = 0;
-        uint64_t base_wqe_idx = 0;
-
-        auto qp = ibgda_get_rc(dst_pe, qp_id);
-        while (bytes > 0) {
-            __be32 lkey, rkey;
-            uint64_t laddr, raddr, chunk_size;
-
-            chunk_size = min(bytes, ibgda_get_lkey_and_rkey(laddr = req_lptr, &lkey, req_rptr, dst_pe, &raddr, &rkey));
-            bytes -= chunk_size;
-
-            auto wqe_idx = ibgda_reserve_wqe_slots(qp, 1);
-            auto wqe_ptr = ibgda_get_wqe_ptr(qp, wqe_idx);
-
-            // Only the last WQE should send imm
-            ibgda_write_rdma_write_wqe(qp, laddr, lkey, raddr, rkey, chunk_size, wqe_idx,&wqe_ptr);
-
-            req_lptr += chunk_size;
-            req_rptr += chunk_size;
-            if ((num_wqes ++) == 0)
-                base_wqe_idx = wqe_idx;
-        }
-
-        ibgda_submit_requests<true>(qp, base_wqe_idx, num_wqes);
     }
 }
 
