@@ -614,6 +614,9 @@ Buffer::internode_dispatch(const torch::Tensor& x, const std::optional<torch::Te
                            const std::optional<torch::Tensor>& cached_rdma_channel_prefix_matrix, const std::optional<torch::Tensor>& cached_recv_rdma_rank_prefix_sum,
                            const std::optional<torch::Tensor>& cached_gbl_channel_prefix_matrix, const std::optional<torch::Tensor>& cached_recv_gbl_rank_prefix_sum,
                            int expert_alignment, const Config& config, std::optional<EventHandle>& previous_event, bool async, bool allocate_on_comm_stream) {
+    // In dispatch, CPU will busy-wait until GPU receive tensor size metadata from other ranks, which can be quite long.
+    // If users of DeepEP need to execute other Python code on other threads, such as KV transfer, their code will get stuck due to GIL
+    // unless we release GIL here.
     pybind11::gil_scoped_release release;
 
     const int num_channels = config.num_sms / 2;
