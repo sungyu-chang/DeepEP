@@ -703,7 +703,8 @@ dispatch(int4* recv_x, float* recv_x_scales, int64_t* recv_topk_idx, float* recv
         int last_issued_tail = 0;
         while (__any_sync(0xffffffff, num_tokens_to_send > 0)) {
             for (int i = 0, synced_num_tokens_to_send; i < kNumRDMARanks; ++ i) {
-                int dst_rdma_rank = (i + channel_id) % kNumRDMARanks;
+                // To mitigate incast congestion, shuffle the starting index of target rank for different ranks and channels
+                int dst_rdma_rank = (i + channel_id + rdma_rank) % kNumRDMARanks;
                 synced_num_tokens_to_send = __shfl_sync(0xffffffff, num_tokens_to_send, dst_rdma_rank);
                 if (synced_num_tokens_to_send == 0)
                     continue;
