@@ -29,12 +29,14 @@ We test low-latency kernels on H800 with each connected to a CX7 InfiniBand 400 
 
 | Dispatch #EP | Latency | RDMA bandwidth | Combine #EP | Latency | RDMA bandwidth |
 |:------------:|:-------:|:--------------:|:-----------:|:-------:|:--------------:|
-|      8       | 163 us  |    46 GB/s     |      8      | 318 us  |    46 GB/s     |
-|      16      | 173 us  |    43 GB/s     |     16      | 329 us  |    44 GB/s     |
-|      32      | 182 us  |    41 GB/s     |     32      | 350 us  |    41 GB/s     |
-|      64      | 186 us  |    40 GB/s     |     64      | 353 us  |    41 GB/s     |
+|      8       | 77 us   |    98 GB/s     |     8       | 114 us  |    127 GB/s    |
+|      16      | 118 us  |    63 GB/s     |     16      | 195 us  |    74 GB/s     |
+|      32      | 155 us  |    48 GB/s     |     32      | 273 us  |    53 GB/s     |
+|      64      | 173 us  |    43 GB/s     |     64      | 314 us  |    46 GB/s     |
 |     128      | 192 us  |    39 GB/s     |     128     | 369 us  |    39 GB/s     |
 |     256      | 194 us  |    39 GB/s     |     256     | 360 us  |    40 GB/s     |
+
+**News (2025.06.05)**: low-latency kernels now leverage NVLink as much as possible, see [#173](https://github.com/deepseek-ai/DeepEP/pull/173) for more details. Thanks for the contribution!
 
 ## Quick start
 
