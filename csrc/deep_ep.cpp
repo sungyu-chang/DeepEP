@@ -113,7 +113,7 @@ Buffer::~Buffer() noexcept(false) {
         internode::finalize();
     }
 
-    // Free cuBLAS handle, workspace and MoE counter
+    // Free workspace and MoE counter
     CUDA_CHECK(cudaFree(workspace));
     CUDA_CHECK(cudaFreeHost(const_cast<int*>(moe_recv_counter)));
 
