@@ -42,9 +42,11 @@ We test low-latency kernels on H800 with each connected to a CX7 InfiniBand 400 
 
 ### Requirements
 
-- Hopper GPUs (may support more architectures or devices later)
+- Ampere (SM80), Hopper (SM90) GPUs, or other architectures with SM90 PTX ISA support
 - Python 3.8 and above
-- CUDA 12.3 and above
+- CUDA version
+  - CUDA 11.0 and above for SM80 GPUs
+  - CUDA 12.3 and above for SM90 GPUs
 - PyTorch 2.1 and above
 - NVLink for intranode communication
 - RDMA network for internode communication
@@ -74,6 +76,13 @@ python tests/test_low_latency.py
 ```bash
 NVSHMEM_DIR=/path/to/installed/nvshmem python setup.py install
 ```
+
+#### Installation environment variables
+
+- `NVSHMEM_DIR`: the path to the NVSHMEM directory, disable all internode and low-latency features if not specified 
+- `DISABLE_SM90_FEATURES`: 0 or 1, whether to disable SM90 features, it is required for SM90 devices or CUDA 11
+- `TORCH_CUDA_ARCH_LIST`: the list of target architectures, e.g. `TORCH_CUDA_ARCH_LIST="9.0"`
+- `DISABLE_AGGRESSIVE_PTX_INSTRS`: 0 or 1, whether to disable aggressive load/store instructions, see [Undefine behavior PTX usage](#undefined-behavior-ptx-usage) for more details
 
 Then, import `deep_ep` in your Python project, and enjoy!
 
@@ -286,11 +295,14 @@ For two-micro-batch overlapping, you can refer to the following figure. With our
 
 - [x] AR support
 - [x] Refactor low-latency mode AR code
-- [ ] A100 support (intranode only)
+- [x] A100 support (intranode only)
 - [x] Support BF16 for the low-latency dispatch kernel
 - [x] Support NVLink protocol for intranode low-latency kernels
 - [ ] TMA copy instead of LD/ST
-- [ ] SM-free normal kernels and refactors
+  - [x] Intranode kernels
+  - [ ] Internode kernels
+  - [ ] Low-latency kernels
+- [ ] SM-free kernels and refactors
 
 ## Notices
 

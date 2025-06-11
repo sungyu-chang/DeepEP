@@ -7,7 +7,7 @@ from typing import Callable, List, Tuple, Optional, Union
 import deep_ep_cpp
 # noinspection PyUnresolvedReferences
 from deep_ep_cpp import Config, EventHandle
-from .utils import EventOverlap
+from .utils import EventOverlap, check_nvlink_connections
 
 
 class Buffer:
@@ -50,6 +50,7 @@ class Buffer:
                 please make sure all connections are via NVLink.
             allow_mnnvl: whether to allow MNNVL
         """
+        check_nvlink_connections(group)
 
         # Initialize the CPP runtime
         self.rank = group.rank()
@@ -104,6 +105,10 @@ class Buffer:
         # Make CPP runtime available
         self.runtime.sync(device_ids, ipc_handles, root_unique_id)
         assert self.runtime.is_available()
+
+    @staticmethod
+    def is_sm90_compiled():
+        return deep_ep_cpp.is_sm90_compiled()
 
     @staticmethod
     def set_num_sms(new_num_sms: int) -> None:
