@@ -567,6 +567,7 @@ dispatch(int4* recv_x, float* recv_x_scales, int64_t* recv_topk_idx, float* recv
         // Update last token tail
         if (last_rdma_tail_idx >= 0)
             st_release_cta(const_cast<const int*>(rdma_send_channel_tail + lane_id), last_rdma_tail_idx + 1);
+        __syncwarp(); 
 
         // Release sequential lock
         lane_id == 0 ? (rdma_send_next_token_idx += 1) : 0;
@@ -633,6 +634,7 @@ dispatch(int4* recv_x, float* recv_x_scales, int64_t* recv_topk_idx, float* recv
                     nvshmemi_ibgda_amo_nonfetch_add(rdma_channel_tail.buffer(rdma_rank), num_tokens_to_issue,
                                                     translate_dst_rdma_rank<kLowLatencyMode>(dst_rdma_rank, nvl_rank), channel_id, dst_rdma_rank == rdma_rank);
                 }
+                __syncwarp();
             }
         }
     } else if (warp_role == WarpRole::kRDMAAndNVLForwarder) {
