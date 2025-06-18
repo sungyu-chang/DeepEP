@@ -1,10 +1,10 @@
+import inspect
 import os
 import sys
 import numpy as np
 import torch
 import torch.distributed as dist
 from typing import Optional
-import inspect
 
 
 def init_dist(local_rank: int, num_local_ranks: int):
