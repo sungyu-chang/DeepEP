@@ -562,7 +562,7 @@ dispatch(int4* recv_x, float* recv_x_scales, int64_t* recv_topk_idx, float* recv
                 acquire_lock(rdma_send_channel_lock + lane_id);
 
                 // Release the transaction slot
-                auto rdy_window = rdma_send_channel_window[lane_id];
+                auto window = rdma_send_channel_window[lane_id];
                 auto latest_tail = rdma_send_channel_tail[lane_id];
                 auto offset = rdma_tail_idx - latest_tail;
 
@@ -570,14 +570,13 @@ dispatch(int4* recv_x, float* recv_x_scales, int64_t* recv_topk_idx, float* recv
                 EP_STATIC_ASSERT(kNumDispatchRDMASenderWarps < 32, "Invalid warps");
 
                 // Erase bit and move the ones if possible
-                rdy_window ^= 1u << offset;
+                window ^= 1u << offset;
                 if (offset == 0) {
-                    EP_DEVICE_ASSERT(rdy_window & 1);
-                    auto num_empty_slots = __ffs(~rdy_window) - 1;
+                    auto num_empty_slots = __ffs(~window) - 1;
                     st_release_cta(rdma_send_channel_tail + lane_id, latest_tail + num_empty_slots);
-                    rdy_window >>= num_empty_slots;
+                    window >>= num_empty_slots;
                 }
-                rdma_send_channel_window[lane_id] = rdy_window;
+                rdma_send_channel_window[lane_id] = window;
 
                 // Release lock
                 release_lock(rdma_send_channel_lock + lane_id);
