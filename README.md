@@ -303,6 +303,7 @@ For two-micro-batch overlapping, you can refer to the following figure. With our
   - [ ] Internode kernels
   - [ ] Low-latency kernels
 - [ ] SM-free kernels and refactors
+- [ ] Fully remove undefined-behavior PTX instructions
 
 ## Notices
 
