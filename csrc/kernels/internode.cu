@@ -563,16 +563,16 @@ dispatch(int4* recv_x, float* recv_x_scales, int64_t* recv_topk_idx, float* recv
                 auto window = rdma_send_channel_window[lane_id];
                 auto latest_tail = rdma_send_channel_tail[lane_id];
                 auto offset = rdma_tail_idx - latest_tail;
-
                 while (offset >= 32) {
                     release_lock(rdma_send_channel_lock + lane_id);
                     acquire_lock(rdma_send_channel_lock + lane_id);
                     latest_tail = rdma_send_channel_tail[lane_id];
                     offset = rdma_tail_idx - latest_tail;
                 }
+
                 // Release the transaction slot
-                // Erase bit and move the ones if possible
-                window ^= 1u << offset;
+                // Add the bit and move the ones if possible
+                window |= 1u << offset;
                 if (offset == 0) {
                     auto num_empty_slots = (~window) == 0 ? 32 : __ffs(~window) - 1;
                     st_release_cta(rdma_send_channel_tail + lane_id, latest_tail + num_empty_slots);
