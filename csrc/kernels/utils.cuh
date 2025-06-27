@@ -438,15 +438,20 @@ __forceinline__ __device__ out_dtype_t extract_required_scale_format(float value
     }
 }
 
-template <int kNumRanks>
+template <int kNumRanks, bool kSyncOnly = false>
 __forceinline__ __device__ void
 barrier_block(int** barrier_signal_ptrs, int rank) {
     auto thread_id = static_cast<int>(threadIdx.x);
 
+    // For non-sync-only cases, the memory operations by other threads in the block must be visible to the `sys` scope
+    if constexpr (not kSyncOnly) {
+        memory_fence();
+        __syncthreads();
+    }
+
     // Add self-ranks, sub other ranks
     if (thread_id < kNumRanks) {
         atomicAdd_system(barrier_signal_ptrs[rank] + thread_id, FINISHED_SUM_TAG);
-        memory_fence();
         atomicSub_system(barrier_signal_ptrs[thread_id] + rank, FINISHED_SUM_TAG);
     }
     EP_DEVICE_ASSERT(kNumRanks <= blockDim.x);
