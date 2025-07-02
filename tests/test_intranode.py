@@ -13,10 +13,10 @@ import test_low_latency
 
 def test_main(num_sms: int, local_rank: int, num_ranks: int, rank: int, buffer: deep_ep.Buffer, group: dist.ProcessGroup):
     # Settings
-    num_tokens = int(os.environ.get("DEEPEP_TEST_NUM_TOKENS", "4096"))
-    hidden = int(os.environ.get("DEEPEP_TEST_HIDDEN", "7168"))
-    num_topk = int(os.environ.get("DEEPEP_TEST_NUM_TOPK", "8"))
-    num_experts = int(os.environ.get("DEEPEP_TEST_NUM_EXPERTS", str((256 // num_ranks) * num_ranks)))
+    num_tokens = int(os.environ.get('EP_TEST_NUM_TOKENS', '4096'))
+    hidden = int(os.environ.get('EP_TEST_HIDDEN', '7168'))
+    num_topk = int(os.environ.get('EP_TEST_NUM_TOPK', '8'))
+    num_experts = int(os.environ.get('EP_TEST_NUM_EXPERTS', str((256 // num_ranks) * num_ranks)))
 
     assert num_experts % num_ranks == 0
     if local_rank == 0:
@@ -257,5 +257,5 @@ def test_loop(local_rank: int, num_local_ranks: int):
 
 
 if __name__ == '__main__':
-    num_processes = int(os.getenv("DEEPEP_TEST_NUM_PROCESSES", "8"))
+    num_processes = int(os.getenv('EP_TEST_NUM_PROCESSES', '8'))
     torch.multiprocessing.spawn(test_loop, args=(num_processes, ), nprocs=num_processes)

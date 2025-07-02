@@ -160,10 +160,10 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
 # noinspection PyUnboundLocalVariable
 def test_loop(local_rank: int, num_local_ranks: int):
     rank, num_ranks, group = init_dist(local_rank, num_local_ranks)
-    num_tokens = int(os.environ.get("DEEPEP_TEST_NUM_TOKENS", "128"))
-    hidden = int(os.environ.get("DEEPEP_TEST_HIDDEN", "7168"))
-    num_topk = int(os.environ.get("DEEPEP_TEST_NUM_TOPK", "8"))
-    num_experts = int(os.environ.get("DEEPEP_TEST_NUM_EXPERTS", "288"))
+    num_tokens = int(os.environ.get('EP_TEST_NUM_TOKENS', '128'))
+    hidden = int(os.environ.get('EP_TEST_HIDDEN', '7168'))
+    num_topk = int(os.environ.get('EP_TEST_NUM_TOPK', '8'))
+    num_experts = int(os.environ.get('EP_TEST_NUM_EXPERTS', '288'))
 
     num_rdma_bytes = deep_ep.Buffer.get_low_latency_rdma_size_hint(num_tokens, hidden, num_ranks, num_experts)
     if local_rank == 0:
@@ -187,5 +187,5 @@ def test_loop(local_rank: int, num_local_ranks: int):
 
 if __name__ == '__main__':
     # TODO: you may modify NUMA binding for less CPU overhead
-    num_processes = int(os.getenv("DEEPEP_TEST_NUM_PROCESSES", "8"))
+    num_processes = int(os.getenv('EP_TEST_NUM_PROCESSES', '8'))
     torch.multiprocessing.spawn(test_loop, args=(num_processes,), nprocs=num_processes)

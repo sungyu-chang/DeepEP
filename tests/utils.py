@@ -14,9 +14,6 @@ def init_dist(local_rank: int, num_local_ranks: int):
     num_nodes = int(os.getenv('WORLD_SIZE', 1))
     node_rank = int(os.getenv('RANK', 0))
 
-    num_processes = int(os.getenv("DEEPEP_TEST_NUM_PROCESSES", "8"))
-    assert (num_local_ranks < num_processes and num_nodes == 1) or num_local_ranks == num_processes
-
     sig = inspect.signature(dist.init_process_group)
     params = {
         'backend': 'nccl',
