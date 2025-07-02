@@ -186,16 +186,16 @@ def bench_kineto(fn, kernel_names: Union[str, tuple], num_tests: int = 30, suppr
     if trace_path is not None:
         prof.export_chrome_trace(trace_path)
 
-    # Return average kernel times
+    # Return average kernel durations
     units = {'ms': 1e3, 'us': 1e6}
-    kernel_times = []
+    kernel_durations = []
     for name in kernel_names:
         for line in prof_lines:
             if name in line:
                 time_str = line.split()[-2]
                 for unit, scale in units.items():
                     if unit in time_str:
-                        kernel_times.append(float(time_str.replace(unit, '')) / scale)
+                        kernel_durations.append(float(time_str.replace(unit, '')) / scale)
                         break
                 break
 
@@ -211,11 +211,11 @@ def bench_kineto(fn, kernel_names: Union[str, tuple], num_tests: int = 30, suppr
             durations = [event['dur'] / 1e6 for event in events]
             assert len(durations) % num_kernels_per_period == 0
             num_kernel_patterns = len(durations) // num_kernels_per_period
-            kernel_times[i] = [sum(durations[j::num_kernels_per_period]) / num_kernel_patterns
+            kernel_durations[i] = [sum(durations[j::num_kernels_per_period]) / num_kernel_patterns
                                for j in range(num_kernels_per_period)]
 
-    # Return execution times
-    return kernel_times if is_tuple else kernel_times[0]
+    # Return execution durations
+    return kernel_durations if is_tuple else kernel_durations[0]
 
 
 def hash_tensor(t: torch.Tensor):
