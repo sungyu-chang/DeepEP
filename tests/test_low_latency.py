@@ -144,18 +144,15 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     # Separate profiling
     for return_recv_hook in (False, True):
         group.barrier()
-        bench_output = bench_kineto(partial(test_func, zero_copy=True, return_recv_hook=return_recv_hook),
+        dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=True, return_recv_hook=return_recv_hook),
                                              kernel_names=('dispatch', 'combine'), barrier_comm_profiling=True,
-                                             suppress_kineto_output=True, duplicate_name_period=2 if return_recv_hook else None)
+                                             suppress_kineto_output=True, num_kernels_per_period=2 if return_recv_hook else 1)
         if not return_recv_hook:
-            dispatch_t, combine_t = bench_output
             print(f'[rank {rank}] Dispatch bandwidth: {num_dispatch_comm_bytes / 1e9 / dispatch_t:.2f} GB/s, avg_t={dispatch_t * 1e6:.2f} us | '
                   f'Combine bandwidth: {num_combine_comm_bytes / 1e9 / combine_t:.2f} GB/s, avg_t={combine_t * 1e6:.2f} us', flush=True)
         else:
-            dispatch_t, combine_t, detail_times = bench_output
-            print(f'[rank {rank}] Dispatch send/recv time: {dispatch_t * 2 * 1e6:.2f} = {detail_times["dispatch"][0] * 1e6:.2f} + {detail_times["dispatch"][1] * 1e6:.2f} us | '
-                  f'Combine send/recv time: {combine_t * 2 * 1e6:.2f} = {detail_times["combine"][0] * 1e6:.2f} + {detail_times["combine"][1] * 1e6:.2f} us', flush=True)
-
+            print(f'[rank {rank}] Dispatch send/recv time: {sum(dispatch_t) * 2 * 1e6:.2f} = {dispatch_t[0] * 1e6:.2f} + {dispatch_t[1] * 1e6:.2f} us | '
+                  f'Combine send/recv time: {sum(combine_t) * 2 * 1e6:.2f} = {combine_t[0] * 1e6:.2f} + {combine_t[1] * 1e6:.2f} us', flush=True)
     return hash_value
 
 

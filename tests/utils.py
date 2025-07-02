@@ -8,7 +8,7 @@ import os
 import sys
 import torch
 import torch.distributed as dist
-from typing import Optional
+from typing import Optional, Union
 
 
 def init_dist(local_rank: int, num_local_ranks: int):
@@ -154,9 +154,9 @@ class suppress_stdout_stderr:
         self.errnull_file.close()
 
 
-def bench_kineto(fn, kernel_names, num_tests: int = 30, suppress_kineto_output: bool = False,
+def bench_kineto(fn, kernel_names: Union[str, tuple], num_tests: int = 30, suppress_kineto_output: bool = False,
                  trace_path: Optional[str] = None, barrier_comm_profiling: bool = False,
-                 duplicate_name_period: Optional[int] = None):
+                 num_kernels_per_period: int = 1):
     # Profile
     suppress = suppress_stdout_stderr if suppress_kineto_output else empty_suppress
     with suppress():
@@ -175,7 +175,7 @@ def bench_kineto(fn, kernel_names, num_tests: int = 30, suppress_kineto_output: 
 
     # Parse the profiling table
     assert isinstance(kernel_names, str) or isinstance(kernel_names, tuple)
-    is_tupled = isinstance(kernel_names, tuple)
+    is_tuple = isinstance(kernel_names, tuple)
     prof_lines = prof.key_averages().table(sort_by='cuda_time_total', max_name_column_width=100).split('\n')
     kernel_names = (kernel_names, ) if isinstance(kernel_names, str) else kernel_names
     assert all([isinstance(name, str) for name in kernel_names])
@@ -199,29 +199,24 @@ def bench_kineto(fn, kernel_names, num_tests: int = 30, suppress_kineto_output: 
                         break
                 break
 
-    if duplicate_name_period is None:
-        return tuple(kernel_times) if is_tupled else kernel_times[0]
-    else:
-        detail_times = extract_detail_times_from_prof(prof, kernel_names=kernel_names, duplicate_name_period=duplicate_name_period)
-        return tuple(kernel_times) + (detail_times,)
+    # Expand the kernels by periods
+    if num_kernels_per_period > 1:
+        with tempfile.NamedTemporaryFile(suffix='.json') as tmp:
+            prof.export_chrome_trace(tmp.name)
+            profile_data = json.loads(Path(tmp.name).read_text())
 
+        for i, kernel_name in enumerate(kernel_names):
+            events = [event for event in profile_data['traceEvents'] if f'::{kernel_name}' in event['name']]
+            events = sorted(events, key=lambda event: event['ts'])
+            durations = [event['dur'] / 1e6 for event in events]
+            assert len(durations) % num_kernels_per_period == 0
+            num_kernel_patterns = len(durations) // num_kernels_per_period
+            kernel_times[i] = [sum(durations[j::num_kernels_per_period]) / num_kernel_patterns
+                               for j in range(num_kernels_per_period)]
 
-def extract_detail_times_from_prof(prof, kernel_names, duplicate_name_period: int):
-    with tempfile.NamedTemporaryFile(suffix=".json") as tmp:
-        prof.export_chrome_trace(tmp.name)
-        profile_data = json.loads(Path(tmp.name).read_text())
+    # Return execution times
+    return kernel_times if is_tuple else kernel_times[0]
 
-    ans = {}
-    for kernel_name in kernel_names:
-        name_matcher = f'::{kernel_name}<'
-        events = [e for e in profile_data["traceEvents"] if name_matcher in e["name"]]
-        events = sorted(events, key=lambda e: e["ts"])
-        durations = [e["dur"] / 1e6 for e in events]
-        ans[kernel_name] = [list_mean(durations[i::duplicate_name_period]) for i in range(duplicate_name_period)]
-    return ans
-
-def list_mean(xs):
-    return sum(xs) / len(xs)
 
 def hash_tensor(t: torch.Tensor):
     return t.view(torch.int64).sum().item()
