@@ -1,4 +1,4 @@
-import os
+import argparse
 import random
 import torch
 import torch.distributed as dist
@@ -16,7 +16,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     assert num_experts % num_ranks == 0
     num_local_experts = num_experts // num_ranks
 
-    # NOTES: the integers greater than 256 exceeds the BF16 precision limit
+    # NOTES: the integers greater than 256 exceed the BF16 precision limit
     rank_offset = 128
     assert num_ranks - rank_offset < 257, 'Too many ranks (exceeding test precision limit)'
 
@@ -98,16 +98,6 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                             assert diff < (7e-4 if round_scale else 1e-5), f'Error: {diff=}, {zero_copy=}'
                             hash_value ^= hash_tensor(combined_x)
 
-    def create_test_cast_with_outliers(num_outliers):
-        tmp = torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
-        tmp /= tmp.abs().amax(dim=1).view(-1, 1)
-        assert tmp.abs().amax().item() <= 1
-
-        # Create some amax outliers
-        for i in range(num_outliers):
-            tmp[random.randint(0, num_tokens - 1)] *= 1e3
-        return tmp
-
     # noinspection PyShadowingNames
     def large_gemm_with_hook(hook):
         mat_0 = torch.randn((8192, 8192), dtype=torch.float)
@@ -156,13 +146,11 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     return hash_value
 
 
-# noinspection PyUnboundLocalVariable
-def test_loop(local_rank: int, num_local_ranks: int, args):
+# noinspection PyUnboundLocalVariable,PyShadowingNames
+def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank, num_ranks, group = init_dist(local_rank, num_local_ranks)
-    num_tokens = args.num_tokens
-    hidden = args.hidden
-    num_topk = args.num_topk
-    num_experts = args.num_experts
+    num_tokens, hidden = args.num_tokens, args.hidden
+    num_topk, num_experts = args.num_topk, args.num_experts
 
     num_rdma_bytes = deep_ep.Buffer.get_low_latency_rdma_size_hint(num_tokens, hidden, num_ranks, num_experts)
     if local_rank == 0:
@@ -186,8 +174,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args):
 
 if __name__ == '__main__':
     # TODO: you may modify NUMA binding for less CPU overhead
-    import argparse
-    parser = argparse.ArgumentParser(description='Test low latency expert parallel')
+    parser = argparse.ArgumentParser(description='Test low-latency EP kernels')
     parser.add_argument('--num-processes', type=int, default=8,
                        help='Number of processes to spawn (default: 8)')
     parser.add_argument('--num-tokens', type=int, default=128,
