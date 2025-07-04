@@ -55,7 +55,7 @@ if __name__ == '__main__':
         os.environ['DISABLE_AGGRESSIVE_PTX_INSTRS'] = '1'
 
     # Disable aggressive PTX instructions
-    if int(os.getenv('DISABLE_AGGRESSIVE_PTX_INSTRS', '0')):
+    if int(os.getenv('DISABLE_AGGRESSIVE_PTX_INSTRS', '1')):
         cxx_flags.append('-DDISABLE_AGGRESSIVE_PTX_INSTRS')
         nvcc_flags.append('-DDISABLE_AGGRESSIVE_PTX_INSTRS')
 

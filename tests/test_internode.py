@@ -234,7 +234,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     num_sms = 24
     num_qps_per_rank = max(num_sms, ll_num_experts // num_ranks if args.test_ll_compatibility else 0)
 
-    buffer = deep_ep.Buffer(group, int(1e9), int(1e9), low_latency_mode=args.test_ll_compatibility,
+    buffer = deep_ep.Buffer(group, int(2e9), int(1e9), low_latency_mode=args.test_ll_compatibility,
                             num_qps_per_rank=num_qps_per_rank)
     assert num_local_ranks == 8 and num_ranks > 8
     torch.manual_seed(rank)
