@@ -463,8 +463,8 @@ barrier_block(int** barrier_signal_ptrs, int rank) {
         if (__all_sync(0xffffffff, value <= 0))
             break;
 
-        if (clock64() - start_time > NUM_TIMEOUT_CYCLES and get_lane_id() == 0) {
-            printf("DeepEP timeout check failed: rank = %d, thread = %d)\n", rank, thread_id);
+        if (clock64() - start_time > NUM_TIMEOUT_CYCLES and thread_id < kNumRanks) {
+            printf("DeepEP timeout check failed: rank = %d, thread = %d, value = %d)\n", rank, thread_id, value);
             trap();
         }
     }
