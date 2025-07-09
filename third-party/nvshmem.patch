@@ -470,23 +470,5 @@ index ef325cd..16ee09c 100644
 
  int nvshmemt_ibgda_show_info(struct nvshmem_transport *transport, int style) {
      NVSHMEMI_ERROR_PRINT("ibgda show info not implemented");
-
----
- src/host/team/team_internal.cpp | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
-
-diff --git a/src/host/team/team_internal.cpp b/src/host/team/team_internal.cpp
-index 8b8a263..1be3dec 100644
---- a/src/host/team/team_internal.cpp
-+++ b/src/host/team/team_internal.cpp
-@@ -1415,7 +1415,7 @@
-     CUDA_RUNTIME_CHECK(
-         cudaMemcpy(device_team_ret_val, team_ret_val, sizeof(int), cudaMemcpyHostToDevice));
-     CUDA_RUNTIME_CHECK(cudaDeviceSynchronize());
--    nvshmemi_call_rdxn_on_stream_kernel<int, RDXN_OPS_MAX>(
-+    nvshmemi_reduce_on_stream<int, RDXN_OPS_MAX>(
-         parent_team->team_idx, device_team_ret_val_reduced, device_team_ret_val, 1,
-         nvshmemi_state->my_stream);
-     CUDA_RUNTIME_CHECK(cudaStreamSynchronize(nvshmemi_state->my_stream));
 --
 2.34.1
