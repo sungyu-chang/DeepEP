@@ -34,7 +34,6 @@ if __name__ == '__main__':
 
     if int(os.getenv('DISABLE_SM90_FEATURES', 0)):
         # Prefer A100
-        print("Not using SM_90")
         os.environ['TORCH_CUDA_ARCH_LIST'] = os.getenv('TORCH_CUDA_ARCH_LIST', '8.0')
 
         # Disable some SM90 features: FP8, launch methods, and TMA
@@ -53,7 +52,6 @@ if __name__ == '__main__':
     else:
         # Prefer H800 series
         os.environ['TORCH_CUDA_ARCH_LIST'] = os.getenv('TORCH_CUDA_ARCH_LIST', '9.0')
-        print("Using SM_90")
 
         # CUDA 12 flags
         nvcc_flags.extend(['-rdc=true', '--ptxas-options=--register-usage-level=10'])
