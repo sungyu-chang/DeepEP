@@ -295,7 +295,6 @@ __device__  __forceinline__ float exp2f_approx(const float &x) {
 #ifndef DISABLE_SM90_FEATURES
 
 __device__ __forceinline__ uint32_t elect_one_sync(int lane_id) {
-#ifndef DISABLE_SM90_FEATURES
     uint32_t pred = 0;
     asm volatile(
       "{\n"
@@ -308,9 +307,6 @@ __device__ __forceinline__ uint32_t elect_one_sync(int lane_id) {
       : "+r"(lane_id), "+r"(pred)
       : "r"(0xffffffff));
     return pred;
-#else
-    return lane_id == 0;
-#endif
 }
 
 __device__ __forceinline__ void fence_view_async_shared() {
