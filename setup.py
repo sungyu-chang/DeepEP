@@ -30,7 +30,6 @@ if __name__ == '__main__':
     if not disable_nvshmem:
         assert os.path.exists(nvshmem_dir), f'The specified NVSHMEM directory does not exist: {nvshmem_dir}'
 
-
     cxx_flags = ['-O3', '-Wno-deprecated-declarations', '-Wno-unused-variable',
                  '-Wno-sign-compare', '-Wno-reorder', '-Wno-attributes']
     nvcc_flags = ['-O3', '-Xcompiler', '-O3']
@@ -59,13 +58,6 @@ if __name__ == '__main__':
         cxx_flags.append('-DDISABLE_SM90_FEATURES')
         nvcc_flags.append('-DDISABLE_SM90_FEATURES')
 
-        # Add architecture flags to nvcc_dlink for the final linking step
-        if len(nvcc_dlink) > 0:
-            nvcc_dlink.extend([
-                '-gencode=arch=compute_80,code=sm_80',
-                '-gencode=arch=compute_80,code=compute_80'
-            ])
-
         # Disable internode and low-latency kernels
         assert disable_nvshmem
     else:
@@ -74,13 +66,6 @@ if __name__ == '__main__':
 
         # CUDA 12 flags
         nvcc_flags.extend(['-rdc=true', '--ptxas-options=--register-usage-level=10'])
-
-        # Add architecture flags to nvcc_dlink for the final linking step
-        if len(nvcc_dlink) > 0:
-            nvcc_dlink.extend([
-                '-gencode=arch=compute_90,code=sm_90',
-                '-gencode=arch=compute_90,code=compute_90'
-            ])
 
     # Disable LD/ST tricks, as some CUDA version does not support `.L1::no_allocate`
     if os.environ['TORCH_CUDA_ARCH_LIST'].strip() != '9.0':
