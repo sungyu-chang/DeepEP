@@ -281,12 +281,12 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
             shared_num_recv_tokens[warp_group_id] = num_recv_tokens;
             shared_recv_token_begin_idx[warp_group_id] = recv_token_begin_idx;
             recv_range[src_rank] = pack2<int, int64_t>(num_recv_tokens, recv_token_begin_idx);
+
+            // Add stats for diagnosis
             if (cumulative_local_expert_recv_stats != nullptr)
                 atomicAdd(cumulative_local_expert_recv_stats + local_expert_idx, num_recv_tokens);
-
             if (dispatch_wait_recv_cost_stats != nullptr)
-                atomicAdd(reinterpret_cast<unsigned long long*>(dispatch_wait_recv_cost_stats + src_rank),
-                                                                wait_recv_cost);
+                atomicAdd(reinterpret_cast<unsigned long long*>(dispatch_wait_recv_cost_stats + src_rank), wait_recv_cost);
         }
         asm volatile("bar.sync %0, %1;" :: "r"(warp_group_id + 2), "r"(num_warps_per_group * 32));
         num_recv_tokens = shared_num_recv_tokens[warp_group_id];
@@ -631,9 +631,10 @@ combine(void* combined_x,
             auto start_time = clock64();
             while (ld_acquire_sys_global(rdma_recv_flag + responsible_expert_idx) == 0);
             auto wait_recv_cost = clock64() - start_time;
-            if (combine_wait_recv_cost_stats != nullptr)
-                atomicAdd(reinterpret_cast<unsigned long long*>(combine_wait_recv_cost_stats
-                          + responsible_expert_idx / num_local_experts), wait_recv_cost);
+            if (combine_wait_recv_cost_stats != nullptr) {
+                const auto& src_rank = responsible_expert_idx / num_local_experts;
+                atomicAdd(reinterpret_cast<unsigned long long*>(combine_wait_recv_cost_stats + src_rank), wait_recv_cost);
+            }
         }
     }
     cg::this_grid().sync();
