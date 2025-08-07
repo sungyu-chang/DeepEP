@@ -152,9 +152,9 @@ notify_dispatch(const int* num_tokens_per_rank, int* moe_recv_counter_mapped, in
                                                 translate_dst_rdma_rank<kLowLatencyMode>(i, nvl_rank), 0, lane_id, 0);
             } else { 
                 UNROLLED_WARP_COPY(1, lane_id, NUM_MAX_NVL_PEERS + num_rdma_experts + 1, 
-                                    rdma_recv_num_tokens_mixed.recv_buffer(rdma_rank), 
-                                    rdma_recv_num_tokens_mixed.send_buffer(i), 
-                                    ld_volatile_global, st_na_global);
+                                   rdma_recv_num_tokens_mixed.recv_buffer(rdma_rank),
+                                   rdma_recv_num_tokens_mixed.send_buffer(i),
+                                   ld_volatile_global, st_na_global);
             }
         }
         __syncthreads();
