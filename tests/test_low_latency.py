@@ -91,7 +91,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                                     begin_idx, count = (recv_layout_range[j] >> 32).item(), (recv_layout_range[j] & int_mask).item()
                                     if not round_scale:
                                         assert (recv_x_amin == j - rank_offset).sum().item() == (all_topk_idx[j] == expert_id).sum().item()
-                                    assert (recv_x[begin_idx:begin_idx + count][:-128] - j).sum().item() == 0
+                                        assert (recv_x[begin_idx:begin_idx + count, :-128] - j + rank_offset).sum().item() == 0
                             if dispatch_use_fp8:
                                 hash_value ^= hash_tensor(packed_recv_x[0][i, :num_valid_tokens])
                                 hash_value ^= hash_tensor(packed_recv_x[1][i, :num_valid_tokens])
