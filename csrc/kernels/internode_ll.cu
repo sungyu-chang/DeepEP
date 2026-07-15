@@ -252,10 +252,19 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     if (phases & LOW_LATENCY_SEND_PHASE)
         cg::this_grid().sync();
 
+    // Warp-balance recv: spread each expert across `spread` SMs (recv-only launch).
+    const bool spread_mode = (num_warp_groups == 1) and ((phases & LOW_LATENCY_SEND_PHASE) == 0) and (num_sms > num_experts);
+    const int spread = spread_mode ? (num_sms / num_experts) : 1;
+    const int expert_idx = spread_mode ? (sm_id / spread) : responsible_expert_idx;
+    const int sub_block = spread_mode ? (sm_id % spread) : 0;
+    // Warp rank / count across the whole cooperating SM group for this expert.
+    const int copy_warp_rank = sub_block * num_warps_per_group + sub_warp_id;
+    const int copy_num_warps = spread * num_warps_per_group;
+
     // Receiving and packing
-    if (responsible_expert_idx < num_experts) {
-        const auto src_rank = responsible_expert_idx / num_local_experts;
-        const auto local_expert_idx = responsible_expert_idx % num_local_experts;
+    if (expert_idx < num_experts) {
+        const auto src_rank = expert_idx / num_local_experts;
+        const auto local_expert_idx = expert_idx % num_local_experts;
         const auto rdma_recv_x_uint8 = static_cast<uint8_t*>(rdma_recv_x) +
                 local_expert_idx * num_ranks * num_max_dispatch_tokens_per_rank * num_bytes_per_msg +
                 src_rank * num_max_dispatch_tokens_per_rank * num_bytes_per_msg;
@@ -278,16 +287,46 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
             while ((num_recv_tokens = ld_acquire_sys_global(rdma_recv_count + local_expert_idx * num_ranks + src_rank)) == 0);
             auto wait_recv_cost = clock64() - start_time;
             num_recv_tokens = -num_recv_tokens - 1;
-            recv_token_begin_idx = atomicAdd(packed_recv_count + local_expert_idx, num_recv_tokens);
+            if (spread_mode) {
+                // Deterministic layout so every cooperating SM computes the same
+                // begin offset independently (no cross-SM atomic ordering).
+                int begin_idx = 0;
+                for (int r = 0; r < src_rank; ++r) {
+                    int c;
+                    while ((c = ld_acquire_sys_global(rdma_recv_count + local_expert_idx * num_ranks + r)) == 0);
+                    begin_idx += (-c - 1);
+                }
+                recv_token_begin_idx = begin_idx;
+                // Metadata/stats written exactly once per (expert, src_rank).
+                if (sub_block == 0) {
+                    recv_range[src_rank] = pack2<int, int64_t>(num_recv_tokens, recv_token_begin_idx);
+                    if (cumulative_local_expert_recv_stats != nullptr)
+                        atomicAdd(cumulative_local_expert_recv_stats + local_expert_idx, num_recv_tokens);
+                    if (dispatch_wait_recv_cost_stats != nullptr)
+                        atomicAdd(reinterpret_cast<unsigned long long*>(dispatch_wait_recv_cost_stats + src_rank), wait_recv_cost);
+                    // Total count written once per local expert (src_rank==0 owner).
+                    if (src_rank == 0) {
+                        int total = num_recv_tokens;
+                        for (int r = 1; r < num_ranks; ++r) {
+                            int c;
+                            while ((c = ld_acquire_sys_global(rdma_recv_count + local_expert_idx * num_ranks + r)) == 0);
+                            total += (-c - 1);
+                        }
+                        packed_recv_count[local_expert_idx] = total;
+                    }
+                }
+            } else {
+                recv_token_begin_idx = atomicAdd(packed_recv_count + local_expert_idx, num_recv_tokens);
+                recv_range[src_rank] = pack2<int, int64_t>(num_recv_tokens, recv_token_begin_idx);
+
+                // Add stats for diagnosis
+                if (cumulative_local_expert_recv_stats != nullptr)
+                    atomicAdd(cumulative_local_expert_recv_stats + local_expert_idx, num_recv_tokens);
+                if (dispatch_wait_recv_cost_stats != nullptr)
+                    atomicAdd(reinterpret_cast<unsigned long long*>(dispatch_wait_recv_cost_stats + src_rank), wait_recv_cost);
+            }
             shared_num_recv_tokens[warp_group_id] = num_recv_tokens;
             shared_recv_token_begin_idx[warp_group_id] = recv_token_begin_idx;
-            recv_range[src_rank] = pack2<int, int64_t>(num_recv_tokens, recv_token_begin_idx);
-
-            // Add stats for diagnosis
-            if (cumulative_local_expert_recv_stats != nullptr)
-                atomicAdd(cumulative_local_expert_recv_stats + local_expert_idx, num_recv_tokens);
-            if (dispatch_wait_recv_cost_stats != nullptr)
-                atomicAdd(reinterpret_cast<unsigned long long*>(dispatch_wait_recv_cost_stats + src_rank), wait_recv_cost);
         }
         asm volatile("bar.sync %0, %1;" :: "r"(warp_group_id + 2), "r"(num_warps_per_group * 32));
         num_recv_tokens = shared_num_recv_tokens[warp_group_id];
@@ -295,7 +334,7 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
 
         // Copy tokens
         EP_DEVICE_ASSERT(num_scales <= 64);
-        for (int i = sub_warp_id; i < num_recv_tokens; i += num_warps_per_group) {
+        for (int i = copy_warp_rank; i < num_recv_tokens; i += copy_num_warps) {
             // Copy source info
             const auto src_src_idx = reinterpret_cast<int*>(rdma_recv_x_uint8 + i * num_bytes_per_msg);
             if (lane_id == 0)
@@ -354,7 +393,15 @@ void dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     EP_HOST_ASSERT(kNumMaxTopK + 1 <= num_warp_groups * num_warps_per_group);
 
     const auto num_warps = num_warp_groups * num_warps_per_group;
-    const auto num_sms = ceil_div(num_experts, num_warp_groups);
+    int num_sms = ceil_div(num_experts, num_warp_groups);
+    // Warp-balance (recv-only launch): when each SM owns exactly one expert and
+    // there are spare SMs, spread each expert's receive-copy across several SMs
+    // so the busiest slot is no longer bound to a single warp-group.
+    if (num_warp_groups == 1 and (phases & LOW_LATENCY_SEND_PHASE) == 0) {
+        int spread = num_device_sms / num_experts;
+        if (spread > 1)
+            num_sms = num_experts * spread;
+    }
     EP_HOST_ASSERT(num_topk <= kNumMaxTopK);
 
     // Workspace checks
@@ -577,6 +624,14 @@ combine(void* combined_x,
 
     extern __shared__ __align__(1024) uint8_t smem_buffer[];
 
+    // Warp-balance send: spread each expert across `spread` SMs (send-only launch).
+    const bool spread_mode = (num_warp_groups == 1) and (phases == LOW_LATENCY_SEND_PHASE) and (num_sms > num_experts);
+    const int spread = spread_mode ? (num_sms / num_experts) : 1;
+    const int expert_idx = spread_mode ? (sm_id / spread) : responsible_expert_idx;
+    const int sub_block = spread_mode ? (sm_id % spread) : 0;
+    const int send_warp_rank = sub_block * num_warps_per_group + sub_warp_id;
+    const int send_num_warps = spread * num_warps_per_group;
+
     // Data type staffs
     constexpr int kNumElemsPerInt4 = sizeof(int4) / sizeof(nv_bfloat16);
     constexpr int64_t hidden_bf16_int4 = kHidden / kNumElemsPerInt4;
@@ -614,9 +669,9 @@ combine(void* combined_x,
     }
 
     // Issue IBGDA sends
-    if (responsible_expert_idx < num_experts) {
-        const auto dst_rank = responsible_expert_idx / num_local_experts;
-        const auto local_expert_idx = responsible_expert_idx % num_local_experts;
+    if (expert_idx < num_experts) {
+        const auto dst_rank = expert_idx / num_local_experts;
+        const auto local_expert_idx = expert_idx % num_local_experts;
         const auto global_expert_idx = rank * num_local_experts + local_expert_idx;
         const auto layout = __ldg(layout_range + local_expert_idx * num_ranks + dst_rank);
         const auto local_x = static_cast<const int4*>(x) +
@@ -660,7 +715,7 @@ combine(void* combined_x,
         };
 
         // Issue IBGDA send
-        for (int token_idx = offset + sub_warp_id; token_idx < offset + num_tokens_to_send; token_idx += num_warps_per_group) {
+        for (int token_idx = offset + send_warp_rank; token_idx < offset + num_tokens_to_send; token_idx += send_num_warps) {
             const auto x_int4 = local_x + token_idx * hidden_bf16_int4;
             const auto rdma_send_type_row = reinterpret_cast<int*>(rdma_send_x_vec + token_idx * num_bytes_per_slot);
             const auto rdma_send_x_vec_row = reinterpret_cast<uint8_t*>(rdma_send_type_row);
@@ -738,7 +793,7 @@ combine(void* combined_x,
         // Put the finishing flag
         EP_DEVICE_ASSERT(num_warps_per_group > 1 and num_warp_groups < 16);
         asm volatile("bar.sync %0, %1;" :: "r"(warp_group_id + 1), "r"(num_warps_per_group * 32));
-        if (sub_warp_id == 1 and lane_id == 0) {
+        if (not spread_mode and sub_warp_id == 1 and lane_id == 0) {
             while (ld_acquire_global(atomic_clean_flag) == 0);
             auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_flag + global_expert_idx);
             auto dst_p2p_ptr = nvshmemi_get_p2p_ptr(dst_ptr, rank, dst_rank);
@@ -758,6 +813,26 @@ combine(void* combined_x,
             fence_barrier_init();
         }
         __syncwarp();
+    }
+
+    // Warp-balance send: all cooperating SMs for an expert must finish before a
+    // single signaler (sub_block 0) sets the per-expert finishing flag once.
+    if (spread_mode) {
+        cg::this_grid().sync();
+        if (sub_block == 0 and expert_idx < num_experts and warp_id == 0 and lane_id == 0) {
+            const auto dst_rank = expert_idx / num_local_experts;
+            const auto local_expert_idx = expert_idx % num_local_experts;
+            const auto global_expert_idx = rank * num_local_experts + local_expert_idx;
+            while (ld_acquire_global(atomic_clean_flag) == 0);
+            auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_flag + global_expert_idx);
+            auto dst_p2p_ptr = nvshmemi_get_p2p_ptr(dst_ptr, rank, dst_rank);
+            if (dst_p2p_ptr == 0) {
+                nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), 1, dst_rank, local_expert_idx);
+            } else {
+                st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), 1);
+            }
+            atomic_add_release_global(atomic_clean_flag, -1);
+        }
     }
 
     // Receiving phase
@@ -935,8 +1010,15 @@ void combine(void* combined_x,
     EP_HOST_ASSERT(num_warp_groups > 0 and num_warps_per_group > 0 and num_recv_per_sm >= 0);
 
     const auto num_warps = num_warp_groups * num_warps_per_group;
-    const auto num_sms = max(ceil_div(num_experts, num_warp_groups),
-                             num_recv_per_sm == 0 ? 1 : ceil_div(num_combined_tokens, num_recv_per_sm));
+    int num_sms = max(ceil_div(num_experts, num_warp_groups),
+                      num_recv_per_sm == 0 ? 1 : ceil_div(num_combined_tokens, num_recv_per_sm));
+    // Warp-balance (send-only launch): spread each expert's send across several
+    // SMs so the busiest expert slot is no longer bound to one warp-group.
+    if (num_warp_groups == 1 and phases == LOW_LATENCY_SEND_PHASE) {
+        int spread = num_device_sms / num_experts;
+        if (spread > 1)
+            num_sms = num_experts * spread;
+    }
 
     // Check workspace
     auto atomic_clean_flag = static_cast<int*>(workspace);
