@@ -151,6 +151,28 @@ public:
                          bool use_fp8, bool round_scale, bool use_ue8m0,
                          bool async, bool return_recv_hook);
 
+    // Feature-flagged compact-layout dispatch. Same inputs/options as `low_latency_dispatch`
+    // (including `async`/`return_recv_hook` semantics: still mutually exclusive), but packs
+    // received tokens into a fixed-capacity, expert-major-contiguous buffer directly during
+    // receive, exposing explicit compact metadata for a future compact combine kernel.
+    // Returns, in order:
+    //   (compact_x, compact_x_scales, recv_count,
+    //    compact_src_info, row_src_rank, row_local_expert, m_indices,
+    //    compact_layout_range, expert_offsets, valid_row_count,
+    //    event, recv_hook)
+    // See `csrc/kernels/api.cuh`'s `internode_ll::dispatch_compact` and
+    // `deep_ep/buffer.py`'s `Buffer.low_latency_dispatch_compact` for the exact tensor
+    // shapes/dtypes and padding semantics.
+    std::tuple<torch::Tensor, std::optional<torch::Tensor>, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
+    low_latency_dispatch_compact(const torch::Tensor& x, const torch::Tensor& topk_idx,
+                                 const std::optional<torch::Tensor>& cumulative_local_expert_recv_stats,
+                                 const std::optional<torch::Tensor>& dispatch_wait_recv_cost_stats,
+                                 int num_max_dispatch_tokens_per_rank, int num_experts,
+                                 bool use_fp8, bool round_scale, bool use_ue8m0,
+                                 bool async, bool return_recv_hook);
+
+    static bool has_low_latency_compact_layout();
+
     std::tuple<torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
     low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_idx, const torch::Tensor& topk_weights,
                         const torch::Tensor& src_info, const torch::Tensor& layout_range,

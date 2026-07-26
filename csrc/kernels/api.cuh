@@ -153,6 +153,34 @@ void dispatch(void* packed_recv_x, void* packed_recv_x_scales,
               void* workspace, int num_device_sms,
               cudaStream_t stream, int phases);
 
+// Feature-flagged compact-layout dispatch (see `Buffer::low_latency_dispatch_compact`):
+// packs tokens directly (during receive) into a fixed-capacity, expert-major-contiguous
+// buffer, instead of the legacy per-(local-expert) separated-slot layout. RDMA landing
+// buffers (`rdma_recv_x`/`rdma_recv_count`/`rdma_x`) are shared/unchanged with `dispatch`.
+// Returns (in addition to the legacy `packed_recv_count`):
+//   - `compact_x` / `compact_x_scales`: logical `[M_capacity, hidden]` / `[M_capacity, hidden / {128,512}]`
+//   - `compact_src_info`, `row_src_rank`, `row_local_expert`, `m_indices`: `[M_capacity]` int32 metadata
+//     (`m_indices` is `-1` for alignment padding so contiguous GEMM skips those rows)
+//   - `expert_offsets`: `[num_local_experts + 1]` int32 aligned expert segment boundaries
+//   - `valid_row_count`: `[1]` int32 true (unpadded) received row count
+//   - `compact_layout_range`: `[num_local_experts, num_ranks]` int64, same packed encoding as
+//     the legacy `packed_recv_layout_range` (low 32 bits count, high 32 bits compact row offset)
+void dispatch_compact(int* packed_recv_count,
+                      int* cumulative_local_expert_recv_stats,
+                      int64_t* dispatch_wait_recv_cost_stats, int diagnostic_stride,
+                      void* rdma_recv_x, int* rdma_recv_count, void* rdma_x,
+                      const void* x, const int64_t* topk_idx,
+                      int* next_clean, int num_next_clean_int,
+                      int num_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
+                      int num_topk, int num_experts, int rank, int num_ranks,
+                      bool use_fp8, bool round_scale, bool use_ue8m0,
+                      void* workspace, int num_device_sms,
+                      cudaStream_t stream, int phases,
+                      void* compact_x, void* compact_x_scales,
+                      int* compact_src_info, int* row_src_rank, int* row_local_expert,
+                      int* m_indices, int* expert_offsets, int* valid_row_count,
+                      int64_t* compact_layout_range);
+
 void combine(void* combined_x,
              void* rdma_recv_x, int* rdma_recv_flag, void* rdma_send_x,
              const void* x, const int64_t* topk_idx, const float* topk_weights,
