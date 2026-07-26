@@ -1114,8 +1114,11 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     }
     if (dispatch_wait_recv_cost_stats.has_value()) {
         EP_HOST_ASSERT(dispatch_wait_recv_cost_stats->scalar_type() == torch::kInt64);
-        EP_HOST_ASSERT(dispatch_wait_recv_cost_stats->dim() == 1 and dispatch_wait_recv_cost_stats->is_contiguous());
-        EP_HOST_ASSERT(dispatch_wait_recv_cost_stats->size(0) == num_ranks);
+        EP_HOST_ASSERT(dispatch_wait_recv_cost_stats->is_contiguous());
+        EP_HOST_ASSERT(
+            (dispatch_wait_recv_cost_stats->dim() == 1 and dispatch_wait_recv_cost_stats->size(0) == num_ranks) or
+            (dispatch_wait_recv_cost_stats->dim() == 2 and dispatch_wait_recv_cost_stats->size(0) == 3 and
+             dispatch_wait_recv_cost_stats->size(1) == num_experts));
     }
 
     auto num_tokens = static_cast<int>(x.size(0)), hidden = static_cast<int>(x.size(1));
@@ -1165,12 +1168,15 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
 
     // Kernel launch
     auto next_clean_meta = next_buffer.clean_meta();
+    const int diagnostic_stride = dispatch_wait_recv_cost_stats.has_value() and dispatch_wait_recv_cost_stats->dim() == 2 ?
+                                  num_experts : 0;
     auto launcher = [=](int phases) {
         internode_ll::dispatch(packed_recv_x.data_ptr(), packed_recv_x_scales_ptr,
                                packed_recv_src_info.data_ptr<int>(), packed_recv_layout_range.data_ptr<int64_t>(),
                                packed_recv_count.data_ptr<int>(),
                                cumulative_local_expert_recv_stats.has_value() ? cumulative_local_expert_recv_stats->data_ptr<int>() : nullptr,
                                dispatch_wait_recv_cost_stats.has_value() ? dispatch_wait_recv_cost_stats->data_ptr<int64_t>() : nullptr,
+                               diagnostic_stride,
                                buffer.dispatch_rdma_recv_data_buffer, buffer.dispatch_rdma_recv_count_buffer,
                                buffer.dispatch_rdma_send_buffer,
                                x.data_ptr(), topk_idx.data_ptr<int64_t>(),
@@ -1235,8 +1241,11 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
 
     if (combine_wait_recv_cost_stats.has_value()) {
         EP_HOST_ASSERT(combine_wait_recv_cost_stats->scalar_type() == torch::kInt64);
-        EP_HOST_ASSERT(combine_wait_recv_cost_stats->dim() == 1 and combine_wait_recv_cost_stats->is_contiguous());
-        EP_HOST_ASSERT(combine_wait_recv_cost_stats->size(0) == num_ranks);
+        EP_HOST_ASSERT(combine_wait_recv_cost_stats->is_contiguous());
+        EP_HOST_ASSERT(
+            (combine_wait_recv_cost_stats->dim() == 1 and combine_wait_recv_cost_stats->size(0) == num_ranks) or
+            (combine_wait_recv_cost_stats->dim() == 2 and combine_wait_recv_cost_stats->size(0) == 3 and
+             combine_wait_recv_cost_stats->size(1) == num_experts));
     }
 
     auto hidden = static_cast<int>(x.size(2));
@@ -1270,6 +1279,8 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
 
     // Kernel launch
     auto next_clean_meta = next_buffer.clean_meta();
+    const int diagnostic_stride = combine_wait_recv_cost_stats.has_value() and combine_wait_recv_cost_stats->dim() == 2 ?
+                                  num_experts : 0;
     auto launcher = [=](int phases) {
         internode_ll::combine(combined_x.data_ptr(),
                               buffer.combine_rdma_recv_data_buffer, buffer.combine_rdma_recv_flag_buffer,
@@ -1277,6 +1288,7 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
                               x.data_ptr(), topk_idx.data_ptr<int64_t>(), topk_weights.data_ptr<float>(),
                               src_info.data_ptr<int>(), layout_range.data_ptr<int64_t>(),
                               combine_wait_recv_cost_stats.has_value() ? combine_wait_recv_cost_stats->data_ptr<int64_t>() : nullptr,
+                              diagnostic_stride,
                               next_clean_meta.first, next_clean_meta.second,
                               num_combined_tokens, hidden, num_max_dispatch_tokens_per_rank,
                               num_topk, num_experts, rank, num_ranks,
@@ -1341,6 +1353,7 @@ bool is_sm90_compiled() {
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "DeepEP: an efficient expert-parallel communication library";
+    m.attr("low_latency_diagnostic_version") = 1;
 
     pybind11::class_<deep_ep::Config>(m, "Config")
         .def(pybind11::init<int, int, int, int, int>(),
