@@ -170,11 +170,12 @@ def align_up(x: int, y: int) -> int:
 # noinspection PyShadowingNames
 def test_compact_dispatch(rank: int, num_ranks: int, group: dist.ProcessGroup):
     """
-    Focused correctness test for the new, feature-flagged `Buffer.low_latency_dispatch_compact`
-    API. This does not touch/weaken the legacy `low_latency_dispatch` coverage in `test_main`
-    above; it stands up its own appropriately-sized `Buffer` and deterministically routes a known
-    number of tokens from every source rank to every (destination rank, local expert) pair so
-    that the per-(source rank, local expert) received counts sweep the requested boundary values
+    Focused correctness test for the feature-flagged `Buffer.low_latency_dispatch_compact` and
+    `Buffer.low_latency_combine_compact` APIs. This does not touch/weaken the legacy
+    `low_latency_dispatch`/`low_latency_combine` coverage in `test_main` above; it stands up its
+    own appropriately-sized `Buffer` and deterministically routes a known number of tokens from
+    every source rank to every (destination rank, local expert) pair so that the per-(source
+    rank, local expert) received counts sweep the requested boundary values
     `{0, 1, 31, 32, 33, 50, 64, 127, 128}` (including at least one fully empty expert-from-rank
     pair), then validates:
       - `recv_count` / `expert_offsets` / `valid_row_count` arithmetic and 128-row alignment,
@@ -184,7 +185,10 @@ def test_compact_dispatch(rank: int, num_ranks: int, group: dist.ProcessGroup):
       - `compact_src_info` / `row_src_rank` / `compact_layout_range` correctness,
       - a `topk_idx == -1` (unrouted) token is correctly excluded,
       - BF16 and FP8 (with and without UE8M0) numerical semantics,
-      - hook vs. non-hook execution parity.
+      - hook vs. non-hook execution parity,
+      - compact combine (top-1, weight 1) correctly reconstructs each routed token's source `x`
+        (and zeroes out unrouted filler tokens), for both hook and non-hook execution,
+      - compact combine explicitly rejects `use_logfmt=True`/`zero_copy=True`.
     """
     assert deep_ep.Buffer.has_low_latency_compact_layout()
 
@@ -344,6 +348,41 @@ def test_compact_dispatch(rank: int, num_ranks: int, group: dist.ProcessGroup):
                 assert (compact_src_info[tail_start:] == -1).all()
                 assert (row_src_rank[tail_start:] == -1).all()
                 assert (recv_x[tail_start:] == 0).all()
+
+            # Compact combine correctness (`Buffer.low_latency_combine_compact`): treat `recv_x`
+            # (the flat BF16 compact-dispatched tokens, already cast back from FP8/UE8M0 above
+            # when applicable) as a trivial "identity" expert output, and combine it back with
+            # top-1 weight 1. Every routed (`topk_idx != -1`) token must reconstruct its own
+            # source `x` row within the same tolerance `test_main` uses for legacy combine;
+            # trailing filler (`topk_idx == -1`) tokens must combine to exactly zero.
+            topk_weights = torch.ones((num_tokens, 1), dtype=torch.float32, device='cuda')
+            combined_x, combine_event, combine_hook = \
+                buffer.low_latency_combine_compact(recv_x, topk_idx, topk_weights, handle,
+                                                   async_finish=not return_recv_hook,
+                                                   return_recv_hook=return_recv_hook)
+            combine_hook() if return_recv_hook else combine_event.current_stream_wait()
+
+            assert combined_x.shape == (num_tokens, hidden)
+            assert combined_x.dtype == torch.bfloat16
+            assert torch.isnan(combined_x).sum().item() == 0
+            routed_mask = (topk_idx.view(-1) != -1)
+            expected_combined_x = torch.where(routed_mask.view(-1, 1), x, torch.zeros_like(x))
+            combine_tol = 9e-4 if use_fp8 else 1e-5
+            combine_diff = calc_diff(expected_combined_x, combined_x)
+            assert combine_diff < combine_tol, \
+                f'Compact combine mismatch: {combine_diff=}, {use_fp8=}, {round_scale=}, {use_ue8m0=}, {return_recv_hook=}'
+            assert (combined_x[~routed_mask] == 0).all(), 'Filler (topk_idx == -1) tokens must combine to exactly zero'
+
+            # `use_logfmt`/`zero_copy` must be explicitly rejected (Python-level `ValueError`,
+            # before ever reaching the C++ host assertions), exactly once is enough since this
+            # does not depend on the dispatch case.
+            if not use_fp8 and not return_recv_hook:
+                for bad_kwargs in ({'use_logfmt': True}, {'zero_copy': True}):
+                    try:
+                        buffer.low_latency_combine_compact(recv_x, topk_idx, topk_weights, handle, **bad_kwargs)
+                        assert False, f'Expected `ValueError` to be raised for {bad_kwargs}'
+                    except ValueError:
+                        pass
 
     buffer.destroy()
     if rank == 0:

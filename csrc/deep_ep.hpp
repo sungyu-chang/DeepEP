@@ -154,7 +154,7 @@ public:
     // Feature-flagged compact-layout dispatch. Same inputs/options as `low_latency_dispatch`
     // (including `async`/`return_recv_hook` semantics: still mutually exclusive), but packs
     // received tokens into a fixed-capacity, expert-major-contiguous buffer directly during
-    // receive, exposing explicit compact metadata for a future compact combine kernel.
+    // receive, exposing explicit compact metadata consumed by `low_latency_combine_compact`.
     // Returns, in order:
     //   (compact_x, compact_x_scales, recv_count,
     //    compact_src_info, row_src_rank, row_local_expert, m_indices,
@@ -171,6 +171,10 @@ public:
                                  bool use_fp8, bool round_scale, bool use_ue8m0,
                                  bool async, bool return_recv_hook);
 
+    // Whether this build supports the compact-layout low-latency dispatch AND combine
+    // (`Buffer.low_latency_dispatch_compact`/`Buffer.low_latency_combine_compact`). `False` when
+    // NVSHMEM support was disabled at compile time (mirrors `is_sm90_compiled`'s pattern for
+    // feature-detection helpers).
     static bool has_low_latency_compact_layout();
 
     std::tuple<torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
@@ -180,6 +184,24 @@ public:
                         int num_max_dispatch_tokens_per_rank, int num_experts,
                         bool use_logfmt, bool zero_copy, bool async, bool return_recv_hook,
                         const std::optional<torch::Tensor>& out = std::nullopt);
+
+    // Feature-flagged, backward-compatible counterpart to `low_latency_combine` for tokens
+    // dispatched via `low_latency_dispatch_compact`. Consumes that method's `handle` metadata
+    // (`compact_src_info`, `row_src_rank`, `row_local_expert`, `compact_layout_range`) instead of
+    // the legacy `(src_info, layout_range)` pair, and `x` must be the flat, contiguous BF16
+    // `[M_capacity, hidden]` compact layout (i.e. the same shape as `low_latency_dispatch_compact`'s
+    // `recv_x`, typically after a contiguous grouped GEMM). `use_logfmt` and `zero_copy` are not
+    // supported in this version and are explicitly rejected. See `csrc/kernels/api.cuh`'s
+    // `internode_ll::combine_compact` and `deep_ep/buffer.py`'s
+    // `Buffer.low_latency_combine_compact` for further detail.
+    std::tuple<torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
+    low_latency_combine_compact(const torch::Tensor& x, const torch::Tensor& topk_idx, const torch::Tensor& topk_weights,
+                                const torch::Tensor& compact_src_info, const torch::Tensor& row_src_rank,
+                                const torch::Tensor& row_local_expert, const torch::Tensor& compact_layout_range,
+                                const std::optional<torch::Tensor>& combine_wait_recv_cost_stats,
+                                int num_max_dispatch_tokens_per_rank, int num_experts,
+                                bool use_logfmt, bool zero_copy, bool async, bool return_recv_hook,
+                                const std::optional<torch::Tensor>& out = std::nullopt);
 
     torch::Tensor
     get_next_low_latency_combine_buffer(int num_max_dispatch_tokens_per_rank, int hidden, int num_experts) const;

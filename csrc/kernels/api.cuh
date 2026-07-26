@@ -193,6 +193,30 @@ void combine(void* combined_x,
              void* workspace, int num_device_sms,
              cudaStream_t stream, int phases, bool zero_copy);
 
+// Feature-flagged compact-layout combine (see `Buffer::low_latency_combine_compact`): the
+// counterpart to `dispatch_compact`. Consumes the same `handle` metadata produced by
+// `dispatch_compact` (`compact_src_info`/`row_src_rank`/`row_local_expert`/`compact_layout_range`)
+// to schedule sends directly from the flat `[M_capacity, hidden]` compact `x`, instead of the
+// legacy per-(local-expert, rank, slot) send phase. RDMA landing buffers (`rdma_recv_x`/
+// `rdma_recv_flag`/`rdma_send_x`) are shared/unchanged with `combine`. Sending is split into a
+// global data kernel (one warp per compact row, globally striding over all blocks/warps) and a
+// later pair-flags kernel on the same stream (exactly one warp per `(dst_rank, local_expert)`
+// pair); receiving reuses `combine`'s token-driven `kCompact` variant, which waits per-token/
+// per-selected-expert instead of the legacy wait-all phase. LogFMT and zero-copy are not
+// supported in this version.
+void combine_compact(void* combined_x,
+                     void* rdma_recv_x, int* rdma_recv_flag, void* rdma_send_x,
+                     const void* x, const int64_t* topk_idx, const float* topk_weights,
+                     const int* compact_src_info, const int* row_src_rank, const int* row_local_expert,
+                     const int64_t* compact_layout_range,
+                     int64_t* combine_wait_recv_cost_stats, int diagnostic_stride,
+                     int* next_clean, int num_next_clean_int,
+                     int num_combined_tokens, int hidden, int num_max_dispatch_tokens_per_rank,
+                     int num_topk, int num_experts, int rank, int num_ranks,
+                     int m_capacity,
+                     int num_device_sms,
+                     cudaStream_t stream, int phases);
+
 } // namespace internode_ll
 
 } // namespace deep_ep

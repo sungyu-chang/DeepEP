@@ -143,9 +143,10 @@ class Buffer:
     @staticmethod
     def has_low_latency_compact_layout() -> bool:
         """
-        Whether this build supports the compact-layout low-latency dispatch
-        (`Buffer.low_latency_dispatch_compact`). `False` when NVSHMEM support was disabled at
-        compile time (mirrors `is_sm90_compiled`'s pattern for feature-detection helpers).
+        Whether this build supports the compact-layout low-latency dispatch AND combine
+        (`Buffer.low_latency_dispatch_compact` and `Buffer.low_latency_combine_compact`).
+        `False` when NVSHMEM support was disabled at compile time (mirrors `is_sm90_compiled`'s
+        pattern for feature-detection helpers).
         """
         return deep_ep_cpp.Buffer.has_low_latency_compact_layout()
 
@@ -620,10 +621,10 @@ class Buffer:
         Unlike `low_latency_dispatch`, tokens are packed directly (during receive) into a fixed
         graph-stable-capacity, expert-major-contiguous buffer, ready to be consumed by a Hopper
         contiguous grouped GEMM (e.g. DeepGEMM's `m_grouped_gemm` family) without any further
-        reshuffling, and exposing explicit compact metadata for a future compact combine kernel.
-        Note: this is dispatch-only. Combine for compact-dispatched tokens (a "compact combine")
-        is not implemented in this version; `low_latency_combine` does not accept this method's
-        `handle`.
+        reshuffling, and exposing explicit compact metadata consumed by `low_latency_combine_compact`.
+        Note: this is dispatch-only. Use `Buffer.low_latency_combine_compact` (not
+        `low_latency_combine`, which does not accept this method's `handle`) to combine
+        compact-dispatched tokens.
 
         Layout (fixed graph-stable capacity, expert-major contiguous rows):
             max_rows_per_expert = align_up(num_ranks * num_max_dispatch_tokens_per_rank, 128)
@@ -735,6 +736,69 @@ class Buffer:
                                                                    use_logfmt, zero_copy, async_finish, return_recv_hook,
                                                                    out)
         tensors_to_record = (x, topk_idx, topk_weights, src_info, layout_range, combined_x)
+        return combined_x, EventOverlap(event, tensors_to_record if async_finish else None), hook
+
+    # noinspection PyTypeChecker
+    def low_latency_combine_compact(self, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor,
+                                    handle: tuple, use_logfmt: bool = False, zero_copy: bool = False,
+                                    async_finish: bool = False, return_recv_hook: bool = False,
+                                    out: Optional[torch.Tensor] = None,
+                                    combine_wait_recv_cost_stats: Optional[torch.Tensor] = None) -> \
+            Tuple[torch.Tensor, EventOverlap, Callable]:
+        """
+        A feature-flagged, compact-layout counterpart to `low_latency_combine`, for tokens dispatched
+        via `low_latency_dispatch_compact`. Same RDMA landing buffers/semantics as `low_latency_combine`
+        (`async_finish`/`return_recv_hook` mutual exclusion, the two-buffer lifetime warning, etc.),
+        but consumes the compact dispatch `handle` and sources sends directly from the flat compact
+        `x` instead of the legacy per-(local-expert, rank, slot) layout.
+
+        Warning: as there are only two buffers, and the returned tensors reuse the buffer, you cannot hold more than 2
+            low-latency kernels' result tensors at a single moment.
+
+        Arguments:
+            x: `[M_capacity, hidden]` with `torch.bfloat16`, contiguous, the flat compact-layout tokens to
+                be sent back to their source ranks and reduced (e.g. `low_latency_dispatch_compact`'s
+                `recv_x`, or a same-shape contiguous grouped GEMM output derived from it). `M_capacity`
+                must equal `num_local_experts * align_up(num_ranks * num_max_dispatch_tokens_per_rank, 128)`,
+                exactly as produced by `low_latency_dispatch_compact`.
+            topk_idx: `[num_combined_tokens, num_topk]` with `torch.int64`, the expert indices selected by the dispatched
+                tokens. `-1` indices (not selecting any expert) are supported. Note that, `num_combined_tokens` equals
+                to the number of dispatched tokens.
+            topk_weights: `[num_combined_tokens, num_topk]` with `torch.float`, the expert weights selected by the dispatched
+                tokens. The received tokens will be reduced with the weights in this tensor.
+            handle: the communication handle given by `low_latency_dispatch_compact`.
+            use_logfmt: not supported in this version; must be `False` (raises `ValueError` otherwise).
+            zero_copy: not supported in this version; must be `False` (raises `ValueError` otherwise).
+            async_finish: the current stream will not wait for the communication kernels to be finished if set.
+            return_recv_hook: return a receiving hook if set. If set, the kernel will just do the RDMA request issues,
+                but **without actually receiving the data**. You must call the received hook to make sure the data's arrival.
+                If you do not set this flag, the kernel will ensure the data's arrival.
+            out: the in-place output tensor, if set, the kernel will write the result to this tensor and return it directly.
+            combine_wait_recv_cost_stats: a cumulative time spent waiting to receive each token tensor for statistics,
+                which should have shape `[num_ranks]` or `[3, num_experts]` and be typed as `torch.int64`.
+                This is useful for detecting and precisely localizing slow anomalies.
+
+        Returns:
+            combined_x: the reduced token tensor, with shape `[num_combined_tokens, hidden]` and type `torch.bfloat16`.
+            event: the event after executing the kernel (valid only if `async_finish` is set).
+            hook: the receiving hook function (valid only if `return_recv_hook` is set).
+        """
+        if use_logfmt:
+            raise ValueError('`use_logfmt=True` is not supported by `low_latency_combine_compact` yet')
+        if zero_copy:
+            raise ValueError('`zero_copy=True` is not supported by `low_latency_combine_compact` yet')
+
+        compact_src_info, row_src_rank, row_local_expert, compact_layout_range, \
+            expert_offsets, valid_row_count, m_indices, \
+            num_max_dispatch_tokens_per_rank, hidden, num_experts = handle
+        combined_x, event, hook = self.runtime.low_latency_combine_compact(
+            x, topk_idx, topk_weights, compact_src_info, row_src_rank, row_local_expert, compact_layout_range,
+            combine_wait_recv_cost_stats,
+            num_max_dispatch_tokens_per_rank, num_experts,
+            use_logfmt, zero_copy, async_finish, return_recv_hook,
+            out)
+        tensors_to_record = (x, topk_idx, topk_weights, compact_src_info, row_src_rank, row_local_expert,
+                            compact_layout_range, combined_x)
         return combined_x, EventOverlap(event, tensors_to_record if async_finish else None), hook
 
     def get_next_low_latency_combine_buffer(self, handle: object):

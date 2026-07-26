@@ -1479,6 +1479,139 @@ Buffer::low_latency_combine(const torch::Tensor& x, const torch::Tensor& topk_id
 #endif
 }
 
+// See `csrc/deep_ep.hpp` and `deep_ep/buffer.py`'s `Buffer.low_latency_combine_compact` for the
+// exact argument/return semantics. This is a *new*, backward-compatible method: it does not
+// change `low_latency_combine`'s behavior, tensors, or tuple arity in any way.
+std::tuple<torch::Tensor, std::optional<EventHandle>, std::optional<std::function<void()>>>
+Buffer::low_latency_combine_compact(const torch::Tensor& x, const torch::Tensor& topk_idx, const torch::Tensor& topk_weights,
+                                    const torch::Tensor& compact_src_info, const torch::Tensor& row_src_rank,
+                                    const torch::Tensor& row_local_expert, const torch::Tensor& compact_layout_range,
+                                    const std::optional<torch::Tensor>& combine_wait_recv_cost_stats,
+                                    int num_max_dispatch_tokens_per_rank, int num_experts,
+                                    bool use_logfmt, bool zero_copy, bool async, bool return_recv_hook,
+                                    const std::optional<torch::Tensor>& out) {
+#ifndef DISABLE_NVSHMEM
+    EP_HOST_ASSERT(low_latency_mode);
+
+    // Initial implementation: explicitly reject LogFMT and zero-copy (matching the Python-level
+    // `ValueError`), rather than silently mis-combining.
+    EP_HOST_ASSERT(not use_logfmt and "`use_logfmt` is not supported by `low_latency_combine_compact` yet");
+    EP_HOST_ASSERT(not zero_copy and "`zero_copy` is not supported by `low_latency_combine_compact` yet");
+
+    // Tensor checks
+    EP_HOST_ASSERT(x.dim() == 2 and x.is_contiguous() and x.scalar_type() == torch::kBFloat16);
+    EP_HOST_ASSERT(x.size(1) % sizeof(int4) == 0 and x.size(1) % 128 == 0);
+    EP_HOST_ASSERT(topk_idx.dim() == 2 and topk_idx.is_contiguous());
+    EP_HOST_ASSERT(topk_idx.size(0) == topk_weights.size(0) and topk_idx.size(1) == topk_weights.size(1));
+    EP_HOST_ASSERT(topk_idx.scalar_type() == torch::kInt64);
+    EP_HOST_ASSERT(topk_weights.dim() == 2 and topk_weights.is_contiguous());
+    EP_HOST_ASSERT(topk_weights.size(0) <= num_max_dispatch_tokens_per_rank);
+    EP_HOST_ASSERT(topk_weights.scalar_type() == torch::kFloat32);
+    EP_HOST_ASSERT(num_experts % num_ranks == 0);
+
+    auto num_local_experts = num_experts / num_ranks;
+    auto hidden = static_cast<int>(x.size(1));
+
+    // Fixed, graph-stable compact capacity: must match `low_latency_dispatch_compact`'s formula
+    // exactly, since `x` must be that method's `recv_x` (or a same-shape contiguous grouped GEMM
+    // output derived from it).
+    auto max_rows_per_expert = align<int>(num_ranks * num_max_dispatch_tokens_per_rank, 128);
+    auto m_capacity = num_local_experts * max_rows_per_expert;
+    EP_HOST_ASSERT(x.size(0) == m_capacity);
+
+    // Handle metadata checks (shapes/dtypes/fixed-capacity formula)
+    EP_HOST_ASSERT(compact_src_info.dim() == 1 and compact_src_info.is_contiguous());
+    EP_HOST_ASSERT(compact_src_info.scalar_type() == torch::kInt32 and compact_src_info.size(0) == m_capacity);
+    EP_HOST_ASSERT(row_src_rank.dim() == 1 and row_src_rank.is_contiguous());
+    EP_HOST_ASSERT(row_src_rank.scalar_type() == torch::kInt32 and row_src_rank.size(0) == m_capacity);
+    EP_HOST_ASSERT(row_local_expert.dim() == 1 and row_local_expert.is_contiguous());
+    EP_HOST_ASSERT(row_local_expert.scalar_type() == torch::kInt32 and row_local_expert.size(0) == m_capacity);
+    EP_HOST_ASSERT(compact_layout_range.dim() == 2 and compact_layout_range.is_contiguous());
+    EP_HOST_ASSERT(compact_layout_range.scalar_type() == torch::kInt64);
+    EP_HOST_ASSERT(compact_layout_range.size(0) == num_local_experts and compact_layout_range.size(1) == num_ranks);
+
+    if (combine_wait_recv_cost_stats.has_value()) {
+        EP_HOST_ASSERT(combine_wait_recv_cost_stats->scalar_type() == torch::kInt64);
+        EP_HOST_ASSERT(combine_wait_recv_cost_stats->is_contiguous());
+        EP_HOST_ASSERT(
+            (combine_wait_recv_cost_stats->dim() == 1 and combine_wait_recv_cost_stats->size(0) == num_ranks) or
+            (combine_wait_recv_cost_stats->dim() == 2 and combine_wait_recv_cost_stats->size(0) == 3 and
+             combine_wait_recv_cost_stats->size(1) == num_experts));
+    }
+
+    auto num_topk = static_cast<int>(topk_weights.size(1));
+    auto num_combined_tokens = static_cast<int>(topk_weights.size(0));
+
+    // Buffer control: the RDMA landing buffers are unchanged/shared with `low_latency_combine`
+    LowLatencyLayout layout(rdma_buffer_ptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
+    EP_HOST_ASSERT(layout.total_bytes <= num_rdma_bytes);
+    auto buffer = layout.buffers[low_latency_buffer_idx];
+    auto next_buffer = layout.buffers[low_latency_buffer_idx ^= 1];
+
+    // Wait previous tasks to be finished
+    // NOTES: the hook mode will always use the default stream
+    auto compute_stream = at::cuda::getCurrentCUDAStream();
+    auto launch_stream = return_recv_hook ? compute_stream : comm_stream;
+    EP_HOST_ASSERT(not (async and return_recv_hook));
+    if (not return_recv_hook)
+        stream_wait(launch_stream, compute_stream);
+
+    // Allocate output tensor
+    torch::Tensor combined_x;
+    if (out.has_value()) {
+        EP_HOST_ASSERT(out->dim() == 2 and out->is_contiguous());
+        EP_HOST_ASSERT(out->size(0) == num_combined_tokens and out->size(1) == hidden);
+        EP_HOST_ASSERT(out->scalar_type() == x.scalar_type());
+        combined_x = out.value();
+    } else {
+        combined_x = torch::empty({num_combined_tokens, hidden}, x.options());
+    }
+
+    // Kernel launch
+    auto next_clean_meta = next_buffer.clean_meta();
+    const int diagnostic_stride = combine_wait_recv_cost_stats.has_value() and combine_wait_recv_cost_stats->dim() == 2 ?
+                                  num_experts : 0;
+    auto launcher = [=](int phases) {
+        internode_ll::combine_compact(combined_x.data_ptr(),
+                              buffer.combine_rdma_recv_data_buffer, buffer.combine_rdma_recv_flag_buffer,
+                              buffer.combine_rdma_send_buffer,
+                              x.data_ptr(), topk_idx.data_ptr<int64_t>(), topk_weights.data_ptr<float>(),
+                              compact_src_info.data_ptr<int>(), row_src_rank.data_ptr<int>(), row_local_expert.data_ptr<int>(),
+                              compact_layout_range.data_ptr<int64_t>(),
+                              combine_wait_recv_cost_stats.has_value() ? combine_wait_recv_cost_stats->data_ptr<int64_t>() : nullptr,
+                              diagnostic_stride,
+                              next_clean_meta.first, next_clean_meta.second,
+                              num_combined_tokens, hidden, num_max_dispatch_tokens_per_rank,
+                              num_topk, num_experts, rank, num_ranks,
+                              m_capacity,
+                              num_device_sms,
+                              launch_stream, phases);
+    };
+    launcher(return_recv_hook ? LOW_LATENCY_SEND_PHASE : (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE));
+
+    // Wait streams
+    std::optional<EventHandle> event;
+    if (async) {
+        // NOTES: we must ensure the all tensors will not be deallocated before the stream-wait happens,
+        // so in Python API, we must wrap all tensors into the event handle.
+        event = EventHandle(launch_stream);
+    } else if (not return_recv_hook) {
+        stream_wait(compute_stream, launch_stream);
+    }
+
+    // Receiver callback
+    std::optional<std::function<void()>> recv_hook = std::nullopt;
+    if (return_recv_hook)
+        recv_hook = [=]() { launcher(LOW_LATENCY_RECV_PHASE); };
+
+    // Return values
+    return {combined_x, event, recv_hook};
+#else
+    EP_HOST_ASSERT(false and "NVSHMEM is disabled during compilation");
+    return {};
+#endif
+}
+
 torch::Tensor
 Buffer::get_next_low_latency_combine_buffer(int num_max_dispatch_tokens_per_rank, int hidden, int num_experts) const {
 #ifndef DISABLE_NVSHMEM
@@ -1548,6 +1681,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("low_latency_dispatch", &deep_ep::Buffer::low_latency_dispatch)
         .def("low_latency_dispatch_compact", &deep_ep::Buffer::low_latency_dispatch_compact)
         .def("low_latency_combine", &deep_ep::Buffer::low_latency_combine)
+        .def("low_latency_combine_compact", &deep_ep::Buffer::low_latency_combine_compact)
         .def("get_next_low_latency_combine_buffer", &deep_ep::Buffer::get_next_low_latency_combine_buffer)
         .def_static("has_low_latency_compact_layout", &deep_ep::Buffer::has_low_latency_compact_layout);
 
