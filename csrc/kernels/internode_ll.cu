@@ -18,6 +18,15 @@ int get_diagnostic_worker_value(const char* name, const int default_value) {
     return value;
 }
 
+int get_diagnostic_mode_value(const char* name, const int default_value, const int max_value) {
+    const auto* raw_value = std::getenv(name);
+    if (raw_value == nullptr)
+        return default_value;
+    const int value = std::atoi(raw_value);
+    EP_HOST_ASSERT(value >= 0 and value <= max_value);
+    return value;
+}
+
 template <int kNumThreads> __launch_bounds__(kNumThreads, 1)
 __global__ void clean_low_latency_buffer(int* clean_0, int num_clean_int_0,
                                          int* clean_1, int num_clean_int_1) {
@@ -1322,6 +1331,143 @@ combine(void* combined_x,
     }
 }
 
+template <int kHidden, bool kUseActivePrefixMap>
+__global__ __launch_bounds__(1024, 1) void
+combine_masked_send_global(void* rdma_recv_x, void* rdma_send_x,
+                           const void* x,
+                           const int* src_info, const int64_t* layout_range,
+                           int64_t* combine_wait_recv_cost_stats, int diagnostic_stride,
+                           int* next_clean, int num_next_clean_int,
+                           int physical_capacity, int num_max_dispatch_tokens_per_rank,
+                           int num_experts, int rank, int num_ranks) {
+    const auto lane_id = get_lane_id();
+    const auto warp_id = static_cast<int>(threadIdx.x) / 32;
+    const auto num_warps_per_block = static_cast<int>(blockDim.x) / 32;
+    const auto global_warp_id = static_cast<int>(blockIdx.x) * num_warps_per_block + warp_id;
+    const auto num_total_warps = static_cast<int>(gridDim.x) * num_warps_per_block;
+    const auto num_local_experts = num_experts / num_ranks;
+    const auto expert_capacity = num_ranks * num_max_dispatch_tokens_per_rank;
+
+    if (blockIdx.x == 0 and warp_id == 0) {
+        #pragma unroll
+        for (int i = lane_id; i < num_next_clean_int; i += 32)
+            next_clean[i] = 0;
+        __syncwarp();
+    }
+
+    constexpr int kNumElemsPerInt4 = sizeof(int4) / sizeof(nv_bfloat16);
+    constexpr int64_t hidden_bf16_int4 = kHidden / kNumElemsPerInt4;
+    constexpr int kNumCopyUnrolls = kHidden % (32 * 4 * sizeof(int4) / sizeof(nv_bfloat16)) == 0 ? 4 : 2;
+    EP_STATIC_ASSERT(kHidden % 128 == 0, "Invalid hidden");
+    constexpr int kNumDivisions = kHidden / 128;
+    constexpr int kNumMetaBytes = kNumDivisions * sizeof(nv_bfloat162);
+    constexpr size_t num_bytes_per_slot = kHidden * sizeof(nv_bfloat16) + kNumMetaBytes;
+    EP_STATIC_ASSERT(num_bytes_per_slot % sizeof(int4) == 0, "Invalid vectorization");
+    constexpr int num_send_bytes = kHidden * sizeof(nv_bfloat16);
+
+    int num_jobs = physical_capacity;
+    if constexpr (kUseActivePrefixMap) {
+        if (lane_id == 0) {
+            num_jobs = 0;
+            #pragma unroll 1
+            for (int pair = 0; pair < num_local_experts * num_ranks; ++ pair) {
+                int count, begin;
+                unpack2(layout_range[pair], count, begin);
+                num_jobs += count;
+            }
+        }
+        num_jobs = __shfl_sync(0xffffffff, num_jobs, 0);
+    }
+    for (int job = global_warp_id; job < num_jobs; job += num_total_warps) {
+        int physical_row = -1;
+        int pair_idx = -1;
+        int pair_row = -1;
+        int dst_rank = -1;
+        int local_expert = -1;
+
+        if (lane_id == 0) {
+            if constexpr (kUseActivePrefixMap) {
+                int compact_begin = 0;
+                #pragma unroll 1
+                for (int candidate_pair = 0; candidate_pair < num_local_experts * num_ranks; ++ candidate_pair) {
+                    int count, begin;
+                    unpack2(layout_range[candidate_pair], count, begin);
+                    if (job < compact_begin + count) {
+                        pair_idx = candidate_pair;
+                        pair_row = job - compact_begin;
+                        local_expert = pair_idx / num_ranks;
+                        dst_rank = pair_idx % num_ranks;
+                        physical_row = local_expert * expert_capacity + begin + pair_row;
+                        break;
+                    }
+                    compact_begin += count;
+                }
+            } else {
+                physical_row = job;
+                local_expert = physical_row / expert_capacity;
+                const auto expert_row = physical_row % expert_capacity;
+                #pragma unroll 1
+                for (int candidate_rank = 0; candidate_rank < num_ranks; ++ candidate_rank) {
+                    int count, begin;
+                    unpack2(layout_range[local_expert * num_ranks + candidate_rank], count, begin);
+                    if (expert_row >= begin and expert_row < begin + count) {
+                        dst_rank = candidate_rank;
+                        pair_idx = local_expert * num_ranks + candidate_rank;
+                        pair_row = expert_row - begin;
+                        break;
+                    }
+                }
+            }
+        }
+
+        physical_row = __shfl_sync(0xffffffff, physical_row, 0);
+        pair_idx = __shfl_sync(0xffffffff, pair_idx, 0);
+        pair_row = __shfl_sync(0xffffffff, pair_row, 0);
+        dst_rank = __shfl_sync(0xffffffff, dst_rank, 0);
+        local_expert = __shfl_sync(0xffffffff, local_expert, 0);
+        if (dst_rank < 0)
+            continue;
+
+        const auto send_start_time = combine_wait_recv_cost_stats != nullptr ? clock64() : 0LL;
+        const auto global_expert = rank * num_local_experts + local_expert;
+        const auto src_token = __shfl_sync(0xffffffff, ld_nc_global(src_info + physical_row), 0);
+        const auto x_int4 = static_cast<const int4*>(x) + static_cast<int64_t>(physical_row) * hidden_bf16_int4;
+        const int64_t send_slot = (static_cast<int64_t>(local_expert) * num_ranks + dst_rank) *
+                num_max_dispatch_tokens_per_rank + pair_row;
+        const auto rdma_send_row = static_cast<uint8_t*>(rdma_send_x) + send_slot * num_bytes_per_slot;
+        const auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_x) +
+                (static_cast<int64_t>(global_expert) * num_max_dispatch_tokens_per_rank + src_token) * num_bytes_per_slot;
+        const auto dst_p2p_ptr = nvshmemi_get_p2p_ptr(dst_ptr, rank, dst_rank);
+
+        if (dst_p2p_ptr == 0) {
+            const auto dst_int4 = reinterpret_cast<int4*>(rdma_send_row);
+            UNROLLED_WARP_COPY(kNumCopyUnrolls, lane_id, hidden_bf16_int4, dst_int4, x_int4, ld_nc_global, st_na_global);
+            __threadfence_system();
+            __syncwarp();
+            nvshmemi_ibgda_put_nbi_warp(dst_ptr, reinterpret_cast<uint64_t>(rdma_send_row), num_send_bytes,
+                                        dst_rank, local_expert, lane_id, pair_row);
+        } else {
+            const auto dst_int4 = reinterpret_cast<int4*>(dst_p2p_ptr);
+            UNROLLED_WARP_COPY(kNumCopyUnrolls, lane_id, hidden_bf16_int4, dst_int4, x_int4, ld_nc_global, st_na_global);
+            __threadfence_system();
+            __syncwarp();
+        }
+
+        if (diagnostic_stride != 0 and combine_wait_recv_cost_stats != nullptr and lane_id == 0) {
+            const auto diagnostic_pair_idx = dst_rank * num_local_experts + local_expert;
+            atomicMax(reinterpret_cast<unsigned long long*>(combine_wait_recv_cost_stats + diagnostic_pair_idx),
+                      static_cast<unsigned long long>(clock64() - send_start_time));
+            int count, begin;
+            unpack2(layout_range[pair_idx], count, begin);
+            combine_wait_recv_cost_stats[diagnostic_stride * 2 + diagnostic_pair_idx] = count;
+        }
+    }
+}
+
+__global__ __launch_bounds__(1024, 1) void
+combine_compact_send_flags(int* rdma_recv_flag,
+                           int num_experts, int rank, int num_ranks);
+
 void combine(void* combined_x,
              void* rdma_recv_x, int* rdma_recv_flag, void* rdma_send_x,
              const void* x, const int64_t* topk_idx, const float* topk_weights,
@@ -1333,6 +1479,49 @@ void combine(void* combined_x,
              bool use_logfmt,
              void* workspace, int num_device_sms,
              cudaStream_t stream, int phases, bool zero_copy) {
+    const int send_scheduler = get_diagnostic_mode_value("DEEPEP_LL_COMBINE_SEND_SCHEDULER", 0, 2);
+    if (send_scheduler != 0 and (phases & LOW_LATENCY_SEND_PHASE)) {
+        EP_HOST_ASSERT(not use_logfmt and not zero_copy);
+        const int num_local_experts = num_experts / num_ranks;
+        const int num_pairs = num_local_experts * num_ranks;
+        const int physical_capacity = num_local_experts * num_ranks * num_max_dispatch_tokens_per_rank;
+
+        {
+            constexpr int kNumWarpsPerBlock = 32;
+            const int num_blocks = max(1, min(num_device_sms, ceil_div(physical_capacity, kNumWarpsPerBlock)));
+#define COMBINE_MASKED_GLOBAL_SEND_LAUNCH_CASE(hidden) { \
+if (send_scheduler == 2) { \
+    LAUNCH_KERNEL(&cfg, combine_masked_send_global<hidden, true>, \
+                  rdma_recv_x, rdma_send_x, x, src_info, layout_range, \
+                  combine_wait_recv_cost_stats, diagnostic_stride, \
+                  next_clean, num_next_clean_int, physical_capacity, num_max_dispatch_tokens_per_rank, \
+                  num_experts, rank, num_ranks); \
+} else { \
+    LAUNCH_KERNEL(&cfg, combine_masked_send_global<hidden, false>, \
+                  rdma_recv_x, rdma_send_x, x, src_info, layout_range, \
+                  combine_wait_recv_cost_stats, diagnostic_stride, \
+                  next_clean, num_next_clean_int, physical_capacity, num_max_dispatch_tokens_per_rank, \
+                  num_experts, rank, num_ranks); \
+} } break
+
+            SETUP_LAUNCH_CONFIG(num_blocks, kNumWarpsPerBlock * 32, stream);
+            SWITCH_HIDDEN(COMBINE_MASKED_GLOBAL_SEND_LAUNCH_CASE);
+#undef COMBINE_MASKED_GLOBAL_SEND_LAUNCH_CASE
+        }
+
+        {
+            constexpr int kNumWarpsPerBlock = 32;
+            const int num_blocks = max(1, ceil_div(num_pairs, kNumWarpsPerBlock));
+            SETUP_LAUNCH_CONFIG(num_blocks, kNumWarpsPerBlock * 32, stream);
+            LAUNCH_KERNEL(&cfg, combine_compact_send_flags,
+                          rdma_recv_flag, num_experts, rank, num_ranks);
+        }
+
+        phases &= ~LOW_LATENCY_SEND_PHASE;
+        if (phases == 0)
+            return;
+    }
+
     constexpr int kNumMaxTopk = 11;
     const int num_warp_groups = ceil_div(num_experts, num_device_sms);
     int num_warps_per_group = 32 / num_warp_groups;
