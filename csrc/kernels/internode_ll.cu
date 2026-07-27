@@ -899,6 +899,27 @@ __forceinline__ __device__ void decode_and_accumulate(uint32_t* ld_buffer, float
     }
 }
 
+template <int kHidden, bool kUseActivePrefixMap, bool kPoolQPs>
+__device__ __forceinline__ void
+combine_masked_send_global_body(void* rdma_recv_x, void* rdma_send_x,
+                                const void* x,
+                                const int* src_info, const int64_t* layout_range,
+                                int64_t* combine_wait_recv_cost_stats, int diagnostic_stride,
+                                int* next_clean, int num_next_clean_int,
+                                int physical_capacity, int num_max_dispatch_tokens_per_rank,
+                                int num_experts, int rank, int num_ranks,
+                                int lane_id, int global_warp_id, int num_total_warps);
+
+__device__ __forceinline__ void signal_combine_pair(int* rdma_recv_flag,
+                                                    int num_local_experts,
+                                                    int rank, int dst_rank,
+                                                    int local_expert);
+
+__device__ __forceinline__ void signal_combine_rank(int* rdma_recv_flag,
+                                                    int num_local_experts,
+                                                    int rank, int dst_rank,
+                                                    int qp_id);
+
 // `kCompact` selects the token-driven, wait-free-barrier receive variant used by
 // `combine_compact` (see below): it skips the legacy per-expert wait-all phase and the
 // cooperative grid-wide sync entirely, since sending for compact combine is done by the
@@ -906,7 +927,8 @@ __forceinline__ __device__ void decode_and_accumulate(uint32_t* ld_buffer, float
 // TMA-load warp instead spins on `rdma_recv_flag` immediately before loading each of its own
 // selected experts (see the `LOW_LATENCY_COMBINE_RECV` section below). The legacy (`kCompact ==
 // false`) variant's send phase and wait-all/grid-sync behavior are completely unchanged.
-template <bool kUseLogFMT, int kHidden, int kNumMaxTopk, int kNumMaxUnrolls, bool kCompact = false>
+template <bool kUseLogFMT, int kHidden, int kNumMaxTopk, int kNumMaxUnrolls,
+          bool kCompact = false, bool kGlobalSend = false, bool kUseRankCounters = false>
 __global__ __launch_bounds__(1024, 1) void
 combine(void* combined_x,
         void* rdma_recv_x, int* rdma_recv_flag, void* rdma_send_x,
@@ -956,6 +978,35 @@ combine(void* combined_x,
     constexpr int kNumMetaBytes = kNumDivisions * sizeof(nv_bfloat162);
     constexpr size_t num_bytes_per_slot = kHidden * sizeof(nv_bfloat16) + kNumMetaBytes;
     EP_STATIC_ASSERT(num_bytes_per_slot % sizeof(int4) == 0, "Invalid vectorization");
+
+    if constexpr (kGlobalSend) {
+        if (phases & LOW_LATENCY_SEND_PHASE) {
+            const auto global_warp_id = sm_id * (num_threads / 32) + warp_id;
+            const auto num_total_warps = num_sms * (num_threads / 32);
+            const auto physical_capacity =
+                    num_local_experts * num_ranks * num_max_dispatch_tokens_per_rank;
+            combine_masked_send_global_body<kHidden, false, false>(
+                    rdma_recv_x, rdma_send_x, x, src_info, layout_range,
+                    combine_wait_recv_cost_stats, diagnostic_stride,
+                    next_clean, num_next_clean_int,
+                    physical_capacity, num_max_dispatch_tokens_per_rank,
+                    num_experts, rank, num_ranks,
+                    lane_id, global_warp_id, num_total_warps);
+
+            cg::this_grid().sync();
+            const auto num_pairs = num_local_experts * num_ranks;
+            for (int pair = global_warp_id; pair < num_pairs; pair += num_total_warps) {
+                if (lane_id == 0) {
+                    const auto dst_rank = pair / num_local_experts;
+                    const auto local_expert = pair % num_local_experts;
+                    signal_combine_pair(
+                            rdma_recv_flag, num_local_experts, rank, dst_rank, local_expert);
+                }
+            }
+            __syncwarp();
+        }
+        goto LOW_LATENCY_COMBINE_RECV;
+    }
 
     // Sending phase
     if ((phases & LOW_LATENCY_SEND_PHASE) == 0)
@@ -1156,14 +1207,18 @@ combine(void* combined_x,
     // phase and the cooperative grid-wide sync entirely, since it waits per-token/per-selected-
     // expert instead, immediately before that expert's TMA load below)
     if constexpr (not kCompact) {
-        if (responsible_expert_idx < num_experts) {
+        constexpr bool use_rank_counters = kUseRankCounters;
+        const auto num_wait_flags = use_rank_counters ? num_ranks : num_experts;
+        if (responsible_expert_idx < num_wait_flags) {
             EP_DEVICE_ASSERT(num_warps_per_group > 1);
             if (sub_warp_id == 0 and lane_id == 0) {
                 auto start_time = clock64();
-                while (ld_acquire_sys_global(rdma_recv_flag + responsible_expert_idx) == 0);
+                const auto expected = use_rank_counters ? num_local_experts : 1;
+                while (ld_acquire_sys_global(rdma_recv_flag + responsible_expert_idx) != expected);
                 auto wait_recv_cost = clock64() - start_time;
                 if (combine_wait_recv_cost_stats != nullptr) {
-                    const auto& src_rank = responsible_expert_idx / num_local_experts;
+                    const auto src_rank = use_rank_counters ?
+                            responsible_expert_idx : responsible_expert_idx / num_local_experts;
                     if (diagnostic_stride == 0) {
                         atomicAdd(reinterpret_cast<unsigned long long*>(combine_wait_recv_cost_stats + src_rank), wait_recv_cost);
                     } else {
@@ -1331,24 +1386,47 @@ combine(void* combined_x,
     }
 }
 
-template <int kHidden, bool kUseActivePrefixMap>
-__global__ __launch_bounds__(1024, 1) void
-combine_masked_send_global(void* rdma_recv_x, void* rdma_send_x,
-                           const void* x,
-                           const int* src_info, const int64_t* layout_range,
-                           int64_t* combine_wait_recv_cost_stats, int diagnostic_stride,
-                           int* next_clean, int num_next_clean_int,
-                           int physical_capacity, int num_max_dispatch_tokens_per_rank,
-                           int num_experts, int rank, int num_ranks) {
-    const auto lane_id = get_lane_id();
-    const auto warp_id = static_cast<int>(threadIdx.x) / 32;
-    const auto num_warps_per_block = static_cast<int>(blockDim.x) / 32;
-    const auto global_warp_id = static_cast<int>(blockIdx.x) * num_warps_per_block + warp_id;
-    const auto num_total_warps = static_cast<int>(gridDim.x) * num_warps_per_block;
+__device__ __forceinline__ void signal_combine_pair(int* rdma_recv_flag,
+                                                    int num_local_experts,
+                                                    int rank, int dst_rank,
+                                                    int local_expert) {
+    const auto global_expert_idx = rank * num_local_experts + local_expert;
+    const auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_flag + global_expert_idx);
+    const auto dst_p2p_ptr = nvshmemi_get_p2p_ptr(dst_ptr, rank, dst_rank);
+    if (dst_p2p_ptr == 0) {
+        nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), 1, dst_rank, local_expert);
+    } else {
+        st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), 1);
+    }
+}
+
+__device__ __forceinline__ void signal_combine_rank(int* rdma_recv_flag,
+                                                    int num_local_experts,
+                                                    int rank, int dst_rank,
+                                                    int qp_id) {
+    const auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_flag + rank);
+    const auto dst_p2p_ptr = nvshmemi_get_p2p_ptr(dst_ptr, rank, dst_rank);
+    if (dst_p2p_ptr == 0) {
+        nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), 1, dst_rank, qp_id);
+    } else if (qp_id == 0) {
+        st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), num_local_experts);
+    }
+}
+
+template <int kHidden, bool kUseActivePrefixMap, bool kPoolQPs>
+__device__ __forceinline__ void
+combine_masked_send_global_body(void* rdma_recv_x, void* rdma_send_x,
+                                const void* x,
+                                const int* src_info, const int64_t* layout_range,
+                                int64_t* combine_wait_recv_cost_stats, int diagnostic_stride,
+                                int* next_clean, int num_next_clean_int,
+                                int physical_capacity, int num_max_dispatch_tokens_per_rank,
+                                int num_experts, int rank, int num_ranks,
+                                int lane_id, int global_warp_id, int num_total_warps) {
     const auto num_local_experts = num_experts / num_ranks;
     const auto expert_capacity = num_ranks * num_max_dispatch_tokens_per_rank;
 
-    if (blockIdx.x == 0 and warp_id == 0) {
+    if (global_warp_id == 0) {
         #pragma unroll
         for (int i = lane_id; i < num_next_clean_int; i += 32)
             next_clean[i] = 0;
@@ -1364,7 +1442,6 @@ combine_masked_send_global(void* rdma_recv_x, void* rdma_send_x,
     constexpr size_t num_bytes_per_slot = kHidden * sizeof(nv_bfloat16) + kNumMetaBytes;
     EP_STATIC_ASSERT(num_bytes_per_slot % sizeof(int4) == 0, "Invalid vectorization");
     constexpr int num_send_bytes = kHidden * sizeof(nv_bfloat16);
-
     int num_jobs = physical_capacity;
     if constexpr (kUseActivePrefixMap) {
         if (lane_id == 0) {
@@ -1444,8 +1521,11 @@ combine_masked_send_global(void* rdma_recv_x, void* rdma_send_x,
             UNROLLED_WARP_COPY(kNumCopyUnrolls, lane_id, hidden_bf16_int4, dst_int4, x_int4, ld_nc_global, st_na_global);
             __threadfence_system();
             __syncwarp();
+            // Pooled mode keeps a warp on one QP across all of its strided jobs.
+            const auto qp_id = kPoolQPs ? global_warp_id % num_local_experts : local_expert;
+            const auto message_idx = kPoolQPs ? job / num_local_experts : pair_row;
             nvshmemi_ibgda_put_nbi_warp(dst_ptr, reinterpret_cast<uint64_t>(rdma_send_row), num_send_bytes,
-                                        dst_rank, local_expert, lane_id, pair_row);
+                                        dst_rank, qp_id, lane_id, message_idx);
         } else {
             const auto dst_int4 = reinterpret_cast<int4*>(dst_p2p_ptr);
             UNROLLED_WARP_COPY(kNumCopyUnrolls, lane_id, hidden_bf16_int4, dst_int4, x_int4, ld_nc_global, st_na_global);
@@ -1464,6 +1544,53 @@ combine_masked_send_global(void* rdma_recv_x, void* rdma_send_x,
     }
 }
 
+template <int kHidden, bool kUseActivePrefixMap, bool kFuseSignals,
+          bool kUseRankCounters, bool kPoolQPs>
+__global__ __launch_bounds__(1024, 1) void
+combine_masked_send_global(void* rdma_recv_x, int* rdma_recv_flag, void* rdma_send_x,
+                           const void* x,
+                           const int* src_info, const int64_t* layout_range,
+                           int64_t* combine_wait_recv_cost_stats, int diagnostic_stride,
+                           int* next_clean, int num_next_clean_int,
+                           int physical_capacity, int num_max_dispatch_tokens_per_rank,
+                           int num_experts, int rank, int num_ranks) {
+    const auto lane_id = get_lane_id();
+    const auto warp_id = static_cast<int>(threadIdx.x) / 32;
+    const auto num_warps_per_block = static_cast<int>(blockDim.x) / 32;
+    const auto global_warp_id = static_cast<int>(blockIdx.x) * num_warps_per_block + warp_id;
+    const auto num_total_warps = static_cast<int>(gridDim.x) * num_warps_per_block;
+    const auto num_local_experts = num_experts / num_ranks;
+
+    combine_masked_send_global_body<kHidden, kUseActivePrefixMap, kPoolQPs>(
+            rdma_recv_x, rdma_send_x, x, src_info, layout_range,
+            combine_wait_recv_cost_stats, diagnostic_stride,
+            next_clean, num_next_clean_int,
+            physical_capacity, num_max_dispatch_tokens_per_rank,
+            num_experts, rank, num_ranks,
+            lane_id, global_warp_id, num_total_warps);
+
+    if constexpr (kFuseSignals) {
+        // Every put has submitted its WQEs and every P2P-writing lane has system-fenced its
+        // stores before reaching here. The same-QP atomic below force-posts any RDMA tail.
+        cg::this_grid().sync();
+        const auto num_signals = num_local_experts * num_ranks;
+        for (int signal = global_warp_id; signal < num_signals; signal += num_total_warps) {
+            if (lane_id == 0) {
+                const auto dst_rank = signal / num_local_experts;
+                const auto signal_id = signal % num_local_experts;
+                if constexpr (kUseRankCounters) {
+                    signal_combine_rank(
+                            rdma_recv_flag, num_local_experts, rank, dst_rank, signal_id);
+                } else {
+                    signal_combine_pair(
+                            rdma_recv_flag, num_local_experts, rank, dst_rank, signal_id);
+                }
+            }
+        }
+        __syncwarp();
+    }
+}
+
 __global__ __launch_bounds__(1024, 1) void
 combine_compact_send_flags(int* rdma_recv_flag,
                            int num_experts, int rank, int num_ranks);
@@ -1479,26 +1606,47 @@ void combine(void* combined_x,
              bool use_logfmt,
              void* workspace, int num_device_sms,
              cudaStream_t stream, int phases, bool zero_copy) {
-    const int send_scheduler = get_diagnostic_mode_value("DEEPEP_LL_COMBINE_SEND_SCHEDULER", 0, 2);
-    if (send_scheduler != 0 and (phases & LOW_LATENCY_SEND_PHASE)) {
+    const int send_scheduler = get_diagnostic_mode_value("DEEPEP_LL_COMBINE_SEND_SCHEDULER", 0, 6);
+    const bool fuse_send_recv =
+            send_scheduler == 4 and phases == (LOW_LATENCY_SEND_PHASE | LOW_LATENCY_RECV_PHASE);
+    if (send_scheduler != 0 and (phases & LOW_LATENCY_SEND_PHASE) and not fuse_send_recv) {
         EP_HOST_ASSERT(not use_logfmt and not zero_copy);
         const int num_local_experts = num_experts / num_ranks;
         const int num_pairs = num_local_experts * num_ranks;
         const int physical_capacity = num_local_experts * num_ranks * num_max_dispatch_tokens_per_rank;
+        const bool fuse_signals = send_scheduler >= 3;
 
         {
             constexpr int kNumWarpsPerBlock = 32;
             const int num_blocks = max(1, min(num_device_sms, ceil_div(physical_capacity, kNumWarpsPerBlock)));
 #define COMBINE_MASKED_GLOBAL_SEND_LAUNCH_CASE(hidden) { \
 if (send_scheduler == 2) { \
-    LAUNCH_KERNEL(&cfg, combine_masked_send_global<hidden, true>, \
-                  rdma_recv_x, rdma_send_x, x, src_info, layout_range, \
+    LAUNCH_KERNEL(&cfg, combine_masked_send_global<hidden, true, false, false, false>, \
+                  rdma_recv_x, rdma_recv_flag, rdma_send_x, x, src_info, layout_range, \
+                  combine_wait_recv_cost_stats, diagnostic_stride, \
+                  next_clean, num_next_clean_int, physical_capacity, num_max_dispatch_tokens_per_rank, \
+                  num_experts, rank, num_ranks); \
+} else if (send_scheduler == 6) { \
+    LAUNCH_KERNEL(&cfg, combine_masked_send_global<hidden, false, true, true, true>, \
+                  rdma_recv_x, rdma_recv_flag, rdma_send_x, x, src_info, layout_range, \
+                  combine_wait_recv_cost_stats, diagnostic_stride, \
+                  next_clean, num_next_clean_int, physical_capacity, num_max_dispatch_tokens_per_rank, \
+                  num_experts, rank, num_ranks); \
+} else if (send_scheduler == 5) { \
+    LAUNCH_KERNEL(&cfg, combine_masked_send_global<hidden, false, true, true, false>, \
+                  rdma_recv_x, rdma_recv_flag, rdma_send_x, x, src_info, layout_range, \
+                  combine_wait_recv_cost_stats, diagnostic_stride, \
+                  next_clean, num_next_clean_int, physical_capacity, num_max_dispatch_tokens_per_rank, \
+                  num_experts, rank, num_ranks); \
+} else if (fuse_signals) { \
+    LAUNCH_KERNEL(&cfg, combine_masked_send_global<hidden, false, true, false, false>, \
+                  rdma_recv_x, rdma_recv_flag, rdma_send_x, x, src_info, layout_range, \
                   combine_wait_recv_cost_stats, diagnostic_stride, \
                   next_clean, num_next_clean_int, physical_capacity, num_max_dispatch_tokens_per_rank, \
                   num_experts, rank, num_ranks); \
 } else { \
-    LAUNCH_KERNEL(&cfg, combine_masked_send_global<hidden, false>, \
-                  rdma_recv_x, rdma_send_x, x, src_info, layout_range, \
+    LAUNCH_KERNEL(&cfg, combine_masked_send_global<hidden, false, false, false, false>, \
+                  rdma_recv_x, rdma_recv_flag, rdma_send_x, x, src_info, layout_range, \
                   combine_wait_recv_cost_stats, diagnostic_stride, \
                   next_clean, num_next_clean_int, physical_capacity, num_max_dispatch_tokens_per_rank, \
                   num_experts, rank, num_ranks); \
@@ -1509,7 +1657,7 @@ if (send_scheduler == 2) { \
 #undef COMBINE_MASKED_GLOBAL_SEND_LAUNCH_CASE
         }
 
-        {
+        if (not fuse_signals) {
             constexpr int kNumWarpsPerBlock = 32;
             const int num_blocks = max(1, ceil_div(num_pairs, kNumWarpsPerBlock));
             SETUP_LAUNCH_CONFIG(num_blocks, kNumWarpsPerBlock * 32, stream);
@@ -1546,6 +1694,7 @@ if (send_scheduler == 2) { \
 
     // Online cast cannot use zero-copy
     EP_HOST_ASSERT(not (zero_copy and use_logfmt));
+    EP_HOST_ASSERT(not fuse_send_recv or (not use_logfmt and not zero_copy));
 
     constexpr int kNumStages = 3;
     constexpr int kNumMaxUnrolls = 4;
@@ -1564,9 +1713,13 @@ if (send_scheduler == 2) { \
     const int smem_size = max(smem_send_size, smem_recv_size);
 
 #define COMBINE_LAUNCH_CASE(hidden) { \
-auto combine_func = use_logfmt ? \
-    combine<true, hidden, kNumMaxTopk, kNumMaxUnrolls> : \
-    combine<false, hidden, kNumMaxTopk, kNumMaxUnrolls>; \
+auto combine_func = fuse_send_recv ? \
+    combine<false, hidden, kNumMaxTopk, kNumMaxUnrolls, false, true> : \
+    (send_scheduler >= 5 ? \
+        combine<false, hidden, kNumMaxTopk, kNumMaxUnrolls, false, false, true> : \
+        (use_logfmt ? \
+            combine<true, hidden, kNumMaxTopk, kNumMaxUnrolls> : \
+            combine<false, hidden, kNumMaxTopk, kNumMaxUnrolls>)); \
 SET_SHARED_MEMORY_FOR_TMA(combine_func); \
 LAUNCH_KERNEL(&cfg, combine_func, \
               combined_x, \
@@ -1716,8 +1869,6 @@ combine_compact_send_flags(int* rdma_recv_flag,
     // lane 0 performs the actual signal
     const auto dst_rank = global_warp_id / num_local_experts;
     const auto local_expert = global_warp_id % num_local_experts;
-    const auto global_expert_idx = rank * num_local_experts + local_expert;
-
     if (lane_id == 0) {
         // NOTES: must NOT call `nvshmemi_ibgda_quiet` here. `nvshmemi_ibgda_put_nbi_warp` (used
         // by `combine_compact_send_data` above) batches doorbells every 4 messages by default, so
@@ -1726,16 +1877,7 @@ combine_compact_send_flags(int* rdma_recv_flag,
         // (same `local_expert`) data WQEs via `ibgda_submit_requests<true>`; same-QP FIFO
         // ordering on the NIC then guarantees the data writes are visible before this flag,
         // remotely.
-        const auto dst_ptr = reinterpret_cast<uint64_t>(rdma_recv_flag + global_expert_idx);
-        const auto dst_p2p_ptr = nvshmemi_get_p2p_ptr(dst_ptr, rank, dst_rank);
-        if (dst_p2p_ptr == 0) {
-            nvshmemi_ibgda_amo_nonfetch_add(reinterpret_cast<int*>(dst_ptr), 1, dst_rank, local_expert);
-        } else {
-            // The data kernel (a prior kernel on the same stream) has already fully completed
-            // and system-fenced all of its P2P writes, so a plain release store is sufficient
-            // here -- no additional handshake is needed.
-            st_release_sys_global(reinterpret_cast<int*>(dst_p2p_ptr), 1);
-        }
+        signal_combine_pair(rdma_recv_flag, num_local_experts, rank, dst_rank, local_expert);
     }
     __syncwarp();
 }
